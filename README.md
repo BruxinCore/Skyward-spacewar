@@ -4,7 +4,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Skyward is a recovery written in Rust, from scratch.
+Skyward is a recovery written in Rust, from scratch, with support for the Nothing Phone (1) (`spacewar`).
 
 <p align="center">
   <img src="assets/home.png" width="30%" alt="Home">
@@ -89,6 +89,7 @@ read and set properties.
 
 | Device | Codename | Tested system version |
 | --- | --- | --- |
+| Nothing Phone (1) | `spacewar` | Nothing OS / Custom ROMs |
 | Xiaomi 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM (Android 17) |
 | Xiaomi 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM (Android 16) |
 
