@@ -1,26 +1,15 @@
 use crate::canvas::Canvas;
 use anyhow::Result;
 
-/// A present target. The device backend scans out through KMS; the host
-/// preview backend encodes PNGs. Keeping the renderer behind this trait is
-/// what lets the whole UI be built and reviewed without the phone.
 pub trait Surface {
     fn size(&self) -> (u32, u32);
-    /// Hand `canvas` to the display. It returns once the frame before it is
-    /// on the panel and this one is on its way, so the next frame is drawn
-    /// while this one goes out.
     fn present(&mut self, canvas: &Canvas) -> Result<()>;
-    /// Wait until the frame presented last is on the panel.
     fn settle(&mut self) -> Result<()>;
 }
 
-/// How Qualcomm's display driver drives a mode, from the text of the
-/// connector's mode_properties blob: key=value lines, a block per mode_name.
 #[cfg(any(target_os = "android", test))]
 #[derive(Debug, PartialEq, Eq)]
 struct SdeMode {
-    /// Layer mixers in the mode's topology, each blending one vertical
-    /// strip of the screen.
     mixers: u32,
     dsc: bool,
 }
@@ -57,23 +46,14 @@ impl SdeMode {
     }
 }
 
-/// Sub-pixel rendering by the display processor. A panel that shows two of
-/// the three colours at each pixel, and leaves the rendering for that to the
-/// display processor, names its layout as spr_pack_type in the connector's
-/// capabilities blob; without the rendering, its red sub-pixels show the
-/// blue of the frame. The CRTC takes the setup in SDE_SPR_INIT_CFG_V1, or
-/// in SDE_SPR_INIT_CFG_V2, which adds the cfg18 fields after the first's.
 #[cfg(any(target_os = "android", test))]
 mod spr {
     use anyhow::{bail, Result};
 
-    /// Red and blue taken at every other pixel, green at each.
     const DECIMATION: [u16; 4] = [1, 0, 1, 0];
-    /// Two colour phases, eight steps apart.
     const COLOUR_PHASE_STEP: u16 = 8;
     const COLOUR_PHASE_REPEAT: u16 = 2;
     const COLOUR_PHASES: [i32; 24] = [-2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    /// Filtering through four taps, with their coefficients.
     const FOUR_TAP: u16 = 2;
     const FOUR_TAP_COEFFICIENTS: [i32; 16] = [128, 256, 128, 0, 86, 241, 164, 21, 52, 204, 204, 52, 21, 164, 241, 86];
     const ADAPTIVE_YYGM: u16 = 0;
@@ -84,14 +64,10 @@ mod spr {
         3039, 3171, 3303, 3435, 3567, 3700, 3832, 3964, 4095,
     ];
 
-    /// The layout the capabilities blob names, among its key=value lines.
     pub fn pack_type(capabilities: &str) -> Option<&str> {
         capabilities.lines().find_map(|line| line.strip_prefix("spr_pack_type="))
     }
 
-    /// The setup for a panel laid out as `pack_type`, as the CRTC property
-    /// `property` takes it: the driver's structure, its fields in order and
-    /// aligned as the phone's C compiler aligns them.
     pub fn setup(pack_type: &str, property: &str) -> Result<Vec<u8>> {
         if pack_type != "pentile" {
             bail!("the panel's sub-pixels are laid out as {pack_type}, and only a pentile layout is set up");
@@ -102,28 +78,20 @@ mod spr {
             other => bail!("no sub-pixel rendering setup is laid out for {other}"),
         };
         let mut out = Vec::new();
-        // flags
         out.extend(0u64.to_ne_bytes());
-        // cfg0 to cfg9: the block on, no white sub-pixel, and the phases,
-        // filter and adaptive mode
         put16(&mut out, &[1, 1, 1, 0, 0, COLOUR_PHASE_STEP, COLOUR_PHASE_REPEAT, FOUR_TAP, ADAPTIVE_YYGM, 0]);
-        // cfg10
         out.extend(0u32.to_ne_bytes());
-        // cfg11 to cfg15
         put16(&mut out, &DECIMATION);
         put16(&mut out, &[0; 4]);
         put16(&mut out, &OPR_GAINS);
         put16(&mut out, &ADAPTIVE_STRENGTHS);
         put16(&mut out, &OPR_OFFSETS);
-        // cfg16 and cfg17, on four bytes
         out.extend([0; 2]);
         put32(&mut out, &FOUR_TAP_COEFFICIENTS);
         put32(&mut out, &COLOUR_PHASES);
-        // cfg18_en and cfg18, off
         if cfg18 {
             out.extend([0; 9]);
         }
-        // The structure ends on eight bytes, as its flags are aligned.
         out.resize(out.len().next_multiple_of(8), 0);
         Ok(out)
     }
@@ -215,7 +183,6 @@ pub mod kms {
     use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
     use std::time::{Duration, Instant};
 
-    /// How long the display may take to complete a commit.
     const COMMIT_TIMEOUT: Duration = Duration::from_secs(2);
 
     struct Card(File);
@@ -229,8 +196,6 @@ pub mod kms {
     impl Device for Card {}
     impl ControlDevice for Card {}
 
-    /// A single-plane dumb buffer presented to ADDFB2, so the framebuffer
-    /// keeps the buffer's own pixel format.
     struct Planar<'a>(&'a DumbBuffer);
 
     impl PlanarBuffer for Planar<'_> {
@@ -254,7 +219,6 @@ pub mod kms {
         }
     }
 
-    /// Byte order of the scanout buffer against the canvas's RGBA.
     #[derive(Clone, Copy, Debug)]
     enum Order {
         Rgba,
@@ -264,13 +228,10 @@ pub mod kms {
     struct Buf {
         db: DumbBuffer,
         fb: framebuffer::Handle,
-        /// The buffer mapped for writing for as long as the surface lives;
-        /// mapping it per frame costs a page fault per page on every frame.
         map: *mut u8,
         len: usize,
     }
 
-    /// A KMS object's properties by name, with their current values.
     struct Props(HashMap<String, (property::Handle, u64)>);
 
     impl Props {
@@ -311,7 +272,6 @@ pub mod kms {
         Ok(card)
     }
 
-    /// The value of the choice named `choice` of an enum property.
     fn enum_value(card: &Card, id: property::Handle, choice: &str) -> Result<u64> {
         let info = card.get_property(id).context("read property")?;
         match info.value_type() {
@@ -321,22 +281,15 @@ pub mod kms {
         .ok_or_else(|| anyhow!("{} offers no {choice}", info.name().to_string_lossy()))
     }
 
-    /// Built-in panel interfaces. Writeback and external outputs are never
-    /// the recovery's screen.
     fn is_panel(interface: connector::Interface) -> bool {
         matches!(interface, connector::Interface::DSI | connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS)
     }
 
-    /// Commit without blocking and wait for the flip event, so a commit the
-    /// display never completes surfaces as an error instead of an endless
-    /// wait.
     fn commit(card: &Card, req: atomic::AtomicModeReq, flags: AtomicCommitFlags) -> Result<()> {
         card.atomic_commit(flags | AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, req).context("atomic commit")?;
         flipped(card)
     }
 
-    /// Wait for the flip event of the commit made last, or fail once the
-    /// display has kept it waiting too long.
     fn flipped(card: &Card) -> Result<()> {
         let deadline = Instant::now() + COMMIT_TIMEOUT;
         loop {
@@ -361,9 +314,6 @@ pub mod kms {
         }
     }
 
-    /// Connectors with their modes and properties, encoders with the CRTC
-    /// they feed, CRTCs with their mode and properties, and the planes in
-    /// use: what a device has for scanout and how it is wired right now.
     pub fn report(path: &str) -> Result<String> {
         use std::fmt::Write;
         let card = open_card(path)?;
@@ -421,7 +371,6 @@ pub mod kms {
         Ok(out)
     }
 
-    /// The panel connector's CRTC, from the encoder driving it.
     fn panel_crtc(card: &Card) -> Result<drm::control::crtc::Handle> {
         let res = card.resource_handles().context("read KMS resources")?;
         for &h in res.connectors() {
@@ -434,9 +383,6 @@ pub mod kms {
         Err(anyhow!("no connected built-in panel"))
     }
 
-    /// The framebuffer the panel scans out right now, as tightly packed RGBA
-    /// rows: what the display controller sends to the screen. Reading another
-    /// client's framebuffer needs root.
     pub fn capture(path: &str) -> Result<Canvas> {
         let card = open_card(path)?;
         let crtc = panel_crtc(&card)?;
@@ -464,15 +410,9 @@ pub mod kms {
         Ok(c)
     }
 
-    /// Direct scanout on the built-in panel: its fastest mode on the CRTC
-    /// driving it, three dumb buffers taken in turn on its primary planes,
-    /// and every other connector and plane taken off that CRTC.
-    /// How the display stands.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Power {
         On,
-        /// The panel rests in its low-power mode, the display processor
-        /// stopped.
         Resting,
         Off,
     }
@@ -480,33 +420,18 @@ pub mod kms {
     pub struct KmsSurface {
         card: Card,
         bufs: [Buf; 3],
-        /// The buffer the next frame goes into.
         back: usize,
-        /// A frame was committed whose flip has not come yet.
         flipping: bool,
-        /// The planes showing the buffer, one per layer mixer, with their
-        /// FB_ID properties.
         planes: Vec<(plane::Handle, property::Handle)>,
-        /// The CRTC driving the panel, with its ACTIVE and MODE_ID
-        /// properties.
         crtc: drm::control::crtc::Handle,
         active: property::Handle,
         mode_id: property::Handle,
-        /// The panel's preferred mode, which it comes up in, and its
-        /// fastest, which it switches to after, where that is another.
         preferred: property::Value<'static>,
         fastest: Option<property::Value<'static>>,
-        /// The sub-pixel rendering setup the CRTC takes with each mode,
-        /// where the panel leaves its sub-pixel rendering to the display.
         spr: Option<(property::Handle, property::Value<'static>)>,
-        /// The panel's connector, with its low-power switch where the
-        /// display driver has one, and the switch's values for running and
-        /// for resting.
         conn: connector::Handle,
         lp: Option<(property::Handle, u64, u64)>,
         power: Power,
-        /// The display came on again in the panel's preferred mode, and the
-        /// panel has yet to switch to its fastest.
         slow: bool,
         w: u32,
         h: u32,
@@ -533,9 +458,6 @@ pub mod kms {
                 .iter()
                 .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
                 .ok_or_else(|| anyhow!("the panel reports no preferred mode"))?;
-            // The fastest refresh at the preferred size, the first listed among
-            // equals: Android scrolls at it, and the 13 Ultra's touch reports
-            // come at the same 120 Hz.
             let mode = *conn
                 .modes()
                 .iter()
@@ -545,8 +467,6 @@ pub mod kms {
                 .expect("the preferred mode itself has the preferred size");
             let (w, h) = (mode.size().0 as u32, mode.size().1 as u32);
 
-            // The CRTC already driving the panel, or the first one an
-            // encoder of this connector can drive.
             let current = match conn.current_encoder() {
                 Some(e) => card.get_encoder(e).context("read encoder")?.crtc(),
                 None => None,
@@ -566,19 +486,11 @@ pub mod kms {
                 }
             };
 
-            // Qualcomm's display driver blends a mode on one or more layer
-            // mixers, each owning a vertical strip of the screen; the 13
-            // Ultra's dual-pipe topology has two. The pipeline is set up the
-            // way Android's compositor sets it up: one plane per mixer
-            // covering its strip, the mode's DSC variant selected, and frame
-            // starts posted to the hardware. With one plane across both
-            // mixers, no DSC selection and the default trigger, the 13
-            // Ultra's panel tore while scrolling.
             let conn_props = Props::read(&card, conn.handle())?;
             let layout = match conn_props.get("mode_properties") {
                 Ok((_, blob)) => {
                     let text = card.get_property_blob(blob).context("read mode_properties")?;
-                    SdeMode::find(&String::from_utf8_lossy(&text), &mode.name().to_string_lossy())?
+                    SdeMode::find(&String::from_utf8_lossy(&text), &mode.name().to_string_lossy()).unwrap_or(SdeMode { mixers: 1, dsc: false })
                 }
                 Err(_) => SdeMode { mixers: 1, dsc: false },
             };
@@ -587,9 +499,6 @@ pub mod kms {
                 return Err(anyhow!("{w} pixels do not split into {strips} strips"));
             }
 
-            // Primary planes that can drive the CRTC, those already on it
-            // first so the boot splash's planes are reused; planes on the
-            // CRTC that are not used are switched off.
             let mut candidates: Vec<(plane::Handle, Vec<u32>, Props, bool)> = Vec::new();
             let mut attached = Vec::new();
             for p in card.plane_handles().context("list planes")? {
@@ -646,24 +555,16 @@ pub mod kms {
             let blob = card.create_property_blob(&mode).context("create mode blob")?;
             let first = card.create_property_blob(preferred).context("create mode blob")?;
             req.add_property(conn.handle(), conn_props.handle("CRTC_ID")?, property::Value::CRTC(Some(crtc)));
-            // The mode is DSC-compressed: select its DSC variant, as Android's
-            // compositor does.
             if layout.dsc {
                 let (id, _) = conn_props.get("dsc_mode")?;
                 req.add_property(conn.handle(), id, property::Value::UnsignedRange(enum_value(&card, id, "dsc_enabled")?));
             }
-            // Frame starts are posted to the hardware: the driver's own
-            // default on display hardware of this generation, and Android's
-            // compositor sets the same.
             if let Ok((id, _)) = conn_props.get("frame_trigger_mode") {
                 req.add_property(conn.handle(), id, property::Value::UnsignedRange(enum_value(&card, id, "posted_start")?));
             }
             let (mode_id, active) = (crtc_props.handle("MODE_ID")?, crtc_props.handle("ACTIVE")?);
             req.add_property(crtc, mode_id, first);
             req.add_property(crtc, active, property::Value::Boolean(true));
-            // A panel whose sub-pixel rendering is the display processor's
-            // has it set up with each mode set: this one, the switch to the
-            // fastest refresh, and each time the display comes on again.
             let spr = match conn_props.get("capabilities") {
                 Ok((_, caps)) => {
                     let text = card.get_property_blob(caps).context("read capabilities")?;
@@ -706,8 +607,6 @@ pub mod kms {
                 req.add_property(*plane, props.handle("CRTC_H")?, property::Value::UnsignedRange(h as u64));
                 planes.push((*plane, fb_prop));
             }
-            // The panel comes up in its preferred mode, then switches to the
-            // fastest, as `to_fastest` says why.
             commit(&card, req, AtomicCommitFlags::ALLOW_MODESET).context("set the panel mode")?;
             let fastest = (mode.vrefresh() != preferred.vrefresh()).then_some(blob);
 
@@ -765,14 +664,6 @@ pub mod kms {
             self.power == Power::Off
         }
 
-        /// Let the panel rest, ready to light again at once: in its
-        /// low-power mode, as Android rests it while dozing, with the
-        /// display processor stopped. The 13 Ultra's lights from there in
-        /// 13 ms, where coming on from off takes 158, most of it the panel
-        /// waiting 120 ms after leaving sleep as its own commands say.
-        /// Where the display driver has no low-power mode, the display
-        /// turns off. A touch controller that follows the panel, as
-        /// Xiaomi's do, rests with it either way.
         pub fn rest(&mut self) -> Result<()> {
             if self.power != Power::On {
                 return Ok(());
@@ -786,9 +677,6 @@ pub mod kms {
             Ok(())
         }
 
-        /// Turn the display off: the panel and the display processor feeding
-        /// it stop drawing power. The next frame presented turns it on
-        /// again.
         pub fn turn_off(&mut self) -> Result<()> {
             if self.power == Power::Off {
                 return Ok(());
@@ -796,17 +684,11 @@ pub mod kms {
             self.settle()?;
             let mut req = atomic::AtomicModeReq::new();
             req.add_property(self.crtc, self.active, property::Value::Boolean(false));
-            // Qualcomm's display driver sends no event for a commit that
-            // turns its CRTC off, so this one is made to return once it is
-            // done.
             self.card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req).context("turn the display off")?;
             self.power = Power::Off;
             Ok(())
         }
 
-        /// Switch a panel that came on again in its preferred mode to its
-        /// fastest. It is called once the backlight is on, which need not
-        /// wait the frames the switch takes.
         pub fn speed_up(&mut self) -> Result<()> {
             if self.slow {
                 self.settle()?;
@@ -816,12 +698,6 @@ pub mod kms {
             Ok(())
         }
 
-        /// The panel, up in its preferred mode, switched to its fastest.
-        /// Powered up in the fast mode directly, the display controller runs
-        /// at the fast rate but the panel keeps its own: the 13 Ultra's sends
-        /// its TE at 60 Hz, and every frame waits two TEs. Switching a
-        /// running panel sends it the commands for the new rate, as Android's
-        /// switches do.
         fn to_fastest(&self) -> Result<()> {
             let Some(fastest) = self.fastest else { return Ok(()) };
             let mut req = atomic::AtomicModeReq::new();
@@ -846,15 +722,6 @@ pub mod kms {
             (self.w, self.h)
         }
 
-        /// A command-mode panel is sent a frame from one of its TE signals
-        /// through most of the time to the next (6.8 of 8.3 ms on the 13
-        /// Ultra at 120 Hz), and the frame's flip comes as the sending
-        /// starts. A frame is committed the moment the flip of the one
-        /// before comes, to be sent from the next TE, and drawn while that
-        /// one is sent: into the buffer of the frame before both, which the
-        /// panel finished reading before the frame now being sent started.
-        /// A display turned off comes on again with the frame, in the
-        /// panel's preferred mode, as it first came up.
         fn present(&mut self, canvas: &Canvas) -> Result<()> {
             if (canvas.w, canvas.h) != (self.w, self.h) {
                 return Err(anyhow!("canvas {}x{} does not match the display {}x{}", canvas.w, canvas.h, self.w, self.h));
@@ -882,8 +749,6 @@ pub mod kms {
             }
             let mut flags = AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT;
             if self.power != Power::On {
-                // The panel runs again, and coming on from off it would
-                // otherwise rest again as it last did.
                 if let Some((id, run, _)) = self.lp {
                     req.add_property(self.conn, id, property::Value::UnsignedRange(run));
                 }
