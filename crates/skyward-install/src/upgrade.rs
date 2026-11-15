@@ -1,18 +1,22 @@
-//! A newer build of Skyward, as its release zips it: the image in the zip,
-//! checked to be Skyward for this phone, and the recovery partitions it
-//! goes into, those of the slot that starts next and of any other slot
-//! that holds Skyward.
-
 use crate::image;
 use anyhow::{ensure, Context, Result};
+use skyward_bootimg::BootImage;
 use skyward_vab::Slot;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 const PARTITION: &str = "recovery";
+const BOOT_PARTITION: &str = "boot";
 
-/// The image the zip at `path` holds, its only entry, read whole.
+fn target_partition(dir: &Path) -> (&'static str, bool) {
+    if image::device(dir, PARTITION, Slot::A).exists() {
+        (PARTITION, false)
+    } else {
+        (BOOT_PARTITION, true)
+    }
+}
+
 pub fn unzip(path: &Path) -> Result<Vec<u8>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).with_context(|| format!("read {} as a zip", path.display()))?;
@@ -24,7 +28,6 @@ pub fn unzip(path: &Path) -> Result<Vec<u8>> {
     Ok(image)
 }
 
-/// Check that `image` is Skyward, packed for the phone `codename` names.
 pub fn check(image: &[u8], codename: &str) -> Result<()> {
     let config = image::device_config(&mut Cursor::new(image)).context("look into the image")?.context("the image is not Skyward")?;
     let config = std::str::from_utf8(&config).context("the image's device configuration is not text")?;
@@ -33,13 +36,11 @@ pub fn check(image: &[u8], codename: &str) -> Result<()> {
     Ok(())
 }
 
-/// The slots whose recovery partition, among the links in `dir`, the newer
-/// build goes into, slot A first: `next`, the slot that starts next, and
-/// any other whose partition holds Skyward now, any build of it.
 pub fn slots(dir: &Path, next: Slot) -> Result<Vec<Slot>> {
+    let (part, _) = target_partition(dir);
     let mut slots = Vec::new();
     for slot in [Slot::A, Slot::B] {
-        let path = image::device(dir, PARTITION, slot);
+        let path = image::device(dir, part, slot);
         let mut file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
         image::drop_cache(&file).with_context(|| format!("drop the cached pages of {}", path.display()))?;
         if slot == next || image::is_skyward(&mut file).with_context(|| format!("look into {}", path.display()))? {
@@ -49,11 +50,28 @@ pub fn slots(dir: &Path, next: Slot) -> Result<Vec<Slot>> {
     Ok(slots)
 }
 
-/// Write `image` into the recovery partitions of `slots`, among the links
-/// in `dir`, and read each back; `progress` hears the bytes so far, of all.
 pub fn write(dir: &Path, image: &[u8], slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-    let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(dir, PARTITION, slot)).collect();
-    image::flash(&mut Cursor::new(image), image.len() as u64, &devices, progress)
+    let (part, in_boot) = target_partition(dir);
+    if !in_boot {
+        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(dir, part, slot)).collect();
+        return image::flash(&mut Cursor::new(image), image.len() as u64, &devices, progress);
+    }
+    let count = slots.len() as u64;
+    for (idx, &slot) in slots.iter().enumerate() {
+        let dev = image::device(dir, BOOT_PARTITION, slot);
+        let mut file = File::open(&dev).with_context(|| format!("open {}", dev.display()))?;
+        image::drop_cache(&file).with_context(|| format!("drop the cached pages of {}", dev.display()))?;
+        let mut target_bytes = Vec::new();
+        file.read_to_end(&mut target_bytes).with_context(|| format!("read {}", dev.display()))?;
+        let patched = BootImage::patch_skyward_from(&target_bytes, image)
+            .with_context(|| format!("patch Skyward into {}", dev.display()))?;
+        let len = patched.len() as u64;
+        let step = idx as u64;
+        image::flash(&mut Cursor::new(&patched), len, std::slice::from_ref(&dev), &mut |done, total| {
+            progress(step * total + done, count * total);
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -62,7 +80,6 @@ mod tests {
     use crate::image::samples::{recovery, skyward_for};
     use std::io::Write;
 
-    /// A zip of `entries`, each a name and what it holds.
     fn zipped(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();
         let mut zip = zip::ZipWriter::new(file.reopen().unwrap());
@@ -97,7 +114,6 @@ mod tests {
         assert!(check(&recovery(true), "ishtar").is_err(), "a device configuration that names no phone");
     }
 
-    /// Recovery partitions of `size` bytes holding `a` and `b`.
     fn partitions(a: &[u8], b: &[u8], size: usize) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (name, image) in [("recovery_a", a), ("recovery_b", b)] {

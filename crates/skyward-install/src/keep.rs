@@ -1,82 +1,90 @@
-//! Keeping this recovery in the recovery partitions an install writes
-//! over: this recovery as its partition holds it, what each slot's
-//! partition held before the install, and which slots get it back after.
-
 use crate::image;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use skyward_bootimg::BootImage;
 use skyward_vab::Slot;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 const PARTITION: &str = "recovery";
+const BOOT_PARTITION: &str = "boot";
 
-/// What a slot's recovery partition holds: a digest of all of it, and
-/// whether that is Skyward, any build of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Held {
     pub digest: [u8; 32],
     pub skyward: bool,
 }
 
-/// This recovery, held from the current slot's recovery partition before
-/// an install, and what each slot's partition held then, slot A first.
 pub struct Kept {
     dir: PathBuf,
+    in_boot: bool,
     image: Vec<u8>,
     own: [u8; 32],
     before: [Held; 2],
 }
 
+fn target_partition(dir: &Path) -> (&'static str, bool) {
+    if image::device(dir, PARTITION, Slot::A).exists() {
+        (PARTITION, false)
+    } else {
+        (BOOT_PARTITION, true)
+    }
+}
+
 impl Kept {
-    /// Hold this recovery from the recovery partitions among the links in
-    /// `dir`, before an install; none when the partition of the `current`
-    /// slot does not hold Skyward, as when it was started without being
-    /// flashed.
     pub fn hold(dir: &Path, current: Slot) -> Result<Option<Kept>> {
-        let (a, image_a) = read(&image::device(dir, PARTITION, Slot::A))?;
-        let (b, image_b) = read(&image::device(dir, PARTITION, Slot::B))?;
+        let (part, in_boot) = target_partition(dir);
+        let (a, image_a) = read(&image::device(dir, part, Slot::A), in_boot)?;
+        let (b, image_b) = read(&image::device(dir, part, Slot::B), in_boot)?;
         let (held, image) = match current {
             Slot::A => (a, image_a),
             Slot::B => (b, image_b),
         };
-        Ok(held.skyward.then(|| Kept { dir: dir.to_path_buf(), image, own: held.digest, before: [a, b] }))
+        Ok(held.skyward.then(|| Kept { dir: dir.to_path_buf(), in_boot, image, own: held.digest, before: [a, b] }))
     }
 
-    /// The slots whose recovery partition gets this recovery back, by what
-    /// the partitions hold once the install is done; `next` is the slot
-    /// that starts next.
     pub fn wanted(&self, next: Slot) -> Result<Vec<Slot>> {
-        let (a, _) = read(&image::device(&self.dir, PARTITION, Slot::A))?;
-        let (b, _) = read(&image::device(&self.dir, PARTITION, Slot::B))?;
+        let part = if self.in_boot { BOOT_PARTITION } else { PARTITION };
+        let (a, _) = read(&image::device(&self.dir, part, Slot::A), self.in_boot)?;
+        let (b, _) = read(&image::device(&self.dir, part, Slot::B), self.in_boot)?;
         Ok(restore(self.before, [a, b], self.own, next))
     }
 
-    /// Write this recovery into the recovery partitions of `slots` and read
-    /// each back; `progress` hears the bytes so far, of all.
     pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
-        image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress)
+        if !self.in_boot {
+            let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
+            return image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress);
+        }
+        let count = slots.len() as u64;
+        for (idx, &slot) in slots.iter().enumerate() {
+            let dev = image::device(&self.dir, BOOT_PARTITION, slot);
+            let (_, target_bytes) = read(&dev, true)?;
+            let patched = BootImage::patch_skyward_from(&target_bytes, &self.image)
+                .with_context(|| format!("patch Skyward into {}", dev.display()))?;
+            let len = patched.len() as u64;
+            let step = idx as u64;
+            image::flash(&mut Cursor::new(&patched), len, std::slice::from_ref(&dev), &mut |done, total| {
+                progress(step * total + done, count * total);
+            })?;
+        }
+        Ok(())
     }
 }
 
-/// What the partition at `path` holds, read past any pages cached of it,
-/// and all of it.
-fn read(path: &Path) -> Result<(Held, Vec<u8>)> {
+fn read(path: &Path, in_boot: bool) -> Result<(Held, Vec<u8>)> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     image::drop_cache(&file).with_context(|| format!("drop the cached pages of {}", path.display()))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).with_context(|| format!("read {}", path.display()))?;
     let skyward = image::is_skyward(&mut Cursor::new(&bytes)).with_context(|| format!("look into {}", path.display()))?;
-    Ok((Held { digest: Sha256::digest(&bytes).into(), skyward }, bytes))
+    let digest = match (in_boot, skyward) {
+        (true, true) => BootImage::skyward_digest(&bytes).unwrap_or_else(|| Sha256::digest(&bytes).into()),
+        _ => Sha256::digest(&bytes).into(),
+    };
+    Ok((Held { digest, skyward }, bytes))
 }
 
-/// The slots whose recovery partition gets this recovery back once an
-/// install is done, by what each held `before` and `after` it, slot A
-/// first: the slot that starts next, `next`, unless it holds this build,
-/// whose digest is `own`; and any other the install wrote over with
-/// something that is not Skyward.
 pub fn restore(before: [Held; 2], after: [Held; 2], own: [u8; 32], next: Slot) -> Vec<Slot> {
     [Slot::A, Slot::B]
         .into_iter()
@@ -93,11 +101,11 @@ pub fn restore(before: [Held; 2], after: [Held; 2], own: [u8; 32], next: Slot) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::samples::recovery;
+    use crate::image::samples::{boot_image, lz4_legacy, recovery};
+    use skyward_bootimg::Ramdisk;
 
     const SKYWARD: Held = Held { digest: [1; 32], skyward: true };
     const OWN: [u8; 32] = SKYWARD.digest;
-    /// Another build of Skyward.
     const OTHER_BUILD: Held = Held { digest: [4; 32], skyward: true };
     const STOCK: Held = Held { digest: [2; 32], skyward: false };
     const OLD: Held = Held { digest: [3; 32], skyward: false };
@@ -118,7 +126,6 @@ mod tests {
         assert!(restore([SKYWARD, OLD], [SKYWARD, OTHER_BUILD], OWN, Slot::A).is_empty(), "a package that put another build of Skyward in");
     }
 
-    /// Recovery partitions of `size` bytes holding `a` and `b`.
     fn partitions(a: &[u8], b: &[u8], size: usize) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (name, image) in [("recovery_a", a), ("recovery_b", b)] {
@@ -136,7 +143,6 @@ mod tests {
         let dir = partitions(&skyward, &stock, size);
         let kept = Kept::hold(dir.path(), Slot::A).unwrap().expect("slot A's partition holds Skyward");
         assert!(kept.wanted(Slot::A).unwrap().is_empty(), "nothing written over");
-        // A package puts the stock recovery in both slots.
         let mut written = stock.clone();
         written.resize(size, 0);
         std::fs::write(dir.path().join("recovery_a"), &written).unwrap();
@@ -149,6 +155,49 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("recovery_a")).unwrap(), whole);
         assert!(kept.wanted(Slot::A).unwrap().is_empty());
         assert_eq!(kept.wanted(Slot::B).unwrap(), [Slot::B], "an install that has slot B start next");
+    }
+
+    #[test]
+    fn boot_partition_preserves_custom_kernel_on_anykernel_and_rom_installs() {
+        let mut sky_rd = Ramdisk { entries: Vec::new() };
+        sky_rd.add("init", 0o750, b"init-a".to_vec()).unwrap();
+        sky_rd.add("system/bin/recovery", 0o750, b"skyward-bin".to_vec()).unwrap();
+        sky_rd.add("skyward/device.toml", 0o644, b"[device]\ncodename = \"spacewar\"\n".to_vec()).unwrap();
+        let sky_boot = boot_image(4096, &lz4_legacy(&sky_rd.archive().unwrap()));
+
+        let mut new_kernel_boot = BootImage::parse(&sky_boot).unwrap();
+        new_kernel_boot.kernel = vec![0x99; 8192];
+        let anykernel_boot = new_kernel_boot.to_bytes().unwrap();
+
+        let mut rom_rd = Ramdisk { entries: Vec::new() };
+        rom_rd.add("init", 0o750, b"init-rom".to_vec()).unwrap();
+        rom_rd.add("first_stage_ramdisk/fstab.qcom", 0o644, b"rom-fstab".to_vec()).unwrap();
+        rom_rd.add("system/bin/recovery", 0o750, b"stock-recovery".to_vec()).unwrap();
+        let mut rom_boot_img = BootImage::parse(&boot_image(4096, &lz4_legacy(&rom_rd.archive().unwrap()))).unwrap();
+        rom_boot_img.kernel = vec![0x77; 4096];
+        let rom_boot = rom_boot_img.to_bytes().unwrap();
+
+        let size = 64 << 10;
+        let dir = tempfile::tempdir().unwrap();
+        for (name, img) in [("boot_a", &sky_boot), ("boot_b", &rom_boot)] {
+            let mut b = img.clone();
+            b.resize(size, 0);
+            std::fs::write(dir.path().join(name), b).unwrap();
+        }
+
+        let kept = Kept::hold(dir.path(), Slot::A).unwrap().expect("holds Skyward in boot_a");
+        let mut ak = anykernel_boot.clone();
+        ak.resize(size, 0);
+        std::fs::write(dir.path().join("boot_a"), &ak).unwrap();
+        assert!(kept.wanted(Slot::A).unwrap().is_empty(), "AnyKernel3 kernel change keeps Skyward intact");
+
+        assert_eq!(kept.wanted(Slot::B).unwrap(), [Slot::B]);
+        kept.write(&[Slot::B], &mut |_, _| {}).unwrap();
+        let patched_b = BootImage::read(&dir.path().join("boot_b")).unwrap();
+        assert_eq!(patched_b.kernel, vec![0x77; 4096], "ROM kernel in boot_b is preserved");
+        let patched_rd = Ramdisk::decode(&patched_b.ramdisk).unwrap();
+        assert_eq!(patched_rd.find("first_stage_ramdisk/fstab.qcom").unwrap().data, b"rom-fstab");
+        assert_eq!(patched_rd.find("system/bin/recovery").unwrap().data, b"skyward-bin");
     }
 
     #[test]

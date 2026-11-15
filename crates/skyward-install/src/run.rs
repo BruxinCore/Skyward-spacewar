@@ -1,8 +1,3 @@
-//! The installer: a thread that installs one package, telling the screen
-//! how it goes, or serves `adb rescue` command after command. A package
-//! from the computer comes over USB, taken over for sideload or rescue and
-//! handed back to adb after; a file on the phone is read where it is, and
-//! a package the system left on a partition through the map of its blocks.
 
 use crate::adb::{self, Connection, Offer, Service};
 use crate::asked::Asked;
@@ -33,60 +28,38 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// What runs right before update_engine or an install script starts
-/// writing. Either may write over the installed system's partitions, so
-/// whatever still runs from them has to move off first.
 pub type Detach = Box<dyn FnOnce() -> Result<()> + Send>;
 
 const METADATA: &str = "/metadata";
 const DATA: &str = "/data";
 
-/// Where a zip's install script is put to run, as Android's recovery puts
-/// it, and the version of the interface the script is told it runs under.
 const BINARY: &str = "/tmp/update-binary";
 const API_VERSION: &str = "3";
 const RETRY: &str = "retry";
 
-/// Scripts written for other recoveries start with the shell they find
-/// here, and look for programs where those recoveries keep them.
 const SBIN_SHELL: &str = "/sbin/sh";
 const SHELL: &str = "/system/bin/sh";
 const SCRIPT_PATH: &str = "/sbin:/system/bin:/system/xbin";
 
-/// How long what an install script leaves running may keep its output open
-/// once the script has ended, before it is ended too; and after that, how
-/// long its output is waited on before it is let go.
 const LINGER: Duration = Duration::from_secs(1);
 
-/// The most often progress is told.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Installer {
     commands: Sender<Command>,
     shared: Arc<Shared>,
-    /// The screen lets it go once it has finished.
     worker: Worker<Event>,
 }
 
 impl Installer {
-    /// Take USB over and wait for `adb sideload`, from a thread of its own.
-    /// `detach` runs before an update package or an install script writes;
-    /// `options` say what else the install does.
     pub fn start(detach: Detach, options: Options) -> Result<Installer> {
         Installer::spawn(Origin::Computer, detach, options, run)
     }
 
-    /// Install the file at `path`, from a thread of its own; `detach` and
-    /// `options` as for [`Installer::start`].
     pub fn open(path: PathBuf, detach: Detach, options: Options) -> Result<Installer> {
         Installer::spawn(Origin::File, detach, options, move |ctx| run_file(ctx, &path))
     }
 
-    /// Install the package the system asked for, from a thread of its own,
-    /// with no one at the screen to agree to it: an update package or a zip
-    /// with an install script, as Android's own recovery installs one.
-    /// `retry` when the install started before and a restart cut it off;
-    /// `detach` and `options` as for [`Installer::start`].
     pub fn asked(package: Asked, retry: bool, detach: Detach, options: Options) -> Result<Installer> {
         Installer::spawn(Origin::Asked { retry }, detach, options, move |ctx| match &package {
             Asked::File(path) => run_file(ctx, path),
@@ -94,11 +67,6 @@ impl Installer {
         })
     }
 
-    /// Take USB over and wait for `adb rescue`, from a thread of its own:
-    /// packages it sends are installed as for [`Installer::start`], what
-    /// the phone is is answered, and erasing all user data is asked of the
-    /// screen with [`Event::Wipe`]. The computer stays on for command after
-    /// command, until it asks the phone to leave or the screen cancels.
     pub fn rescue(detach: Detach, options: Options) -> Result<Installer> {
         Installer::spawn(Origin::Computer, detach, options, rescue)
     }
@@ -121,62 +89,43 @@ impl Installer {
         Ok(Installer { commands, shared, worker })
     }
 
-    /// Readable while events wait.
     pub fn fd(&self) -> RawFd {
         self.worker.fd()
     }
 
-    /// The events since the last call.
     pub fn events(&self) -> Vec<Event> {
         self.worker.events()
     }
 
-    /// Write the image the installer holds to `partition` in `slots`.
     pub fn flash(&self, partition: &'static str, slots: Vec<Slot>) {
-        // Only a finished installer stops listening, and then there is
-        // nothing left to write.
         let _ = self.commands.send(Command::Flash { partition, slots });
     }
 
-    /// Install the update the installer holds.
     pub fn install(&self) {
         let _ = self.commands.send(Command::Install);
     }
 
-    /// Install the system the installer holds with a root of `size` bytes.
     pub fn install_system(&self, size: u64) {
         let _ = self.commands.send(Command::InstallSystem { size });
     }
 
-    /// Tell rescue whether the user data the computer asked to be erased
-    /// was.
     pub fn wiped(&self, erased: bool) {
         let _ = self.commands.send(Command::Wiped(erased));
     }
 
-    /// Stop waiting for the computer, for where an image goes, or for an
-    /// update to be agreed to.
     pub fn cancel(&self) -> Result<()> {
         let _ = self.commands.send(Command::Cancel);
         if self.shared.cancel() {
-            // A read the computer never answers ends when the function goes
-            // away.
             skyward_sys::set_prop("sys.usb.config", "none")?;
         }
         Ok(())
     }
 }
 
-/// Where the package comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
-    /// The computer, with `adb sideload` or `adb rescue`.
     Computer,
-    /// A file on the phone.
     File,
-    /// The system, which asked before the recovery started for a package
-    /// on the phone to be installed; `retry` when the install started
-    /// before and a restart cut it off.
     Asked { retry: bool },
 }
 
@@ -206,7 +155,6 @@ fn run(ctx: &mut Context) -> Outcome {
     let accepted = conn.accept();
     ctx.shared.accepting(false);
     let (outcome, conn) = match accepted {
-        // Cancelled as the computer started sending.
         Ok(_) if ctx.shared.cancelled() => {
             finish(&mut conn, adb::DONE);
             (Outcome::Cancelled, conn)
@@ -219,27 +167,19 @@ fn run(ctx: &mut Context) -> Outcome {
     if let Err(e) = usb.close(conn.into_link()) {
         let _ = kmsg(&format!("install: USB not handed back to adb: {e:#}"));
     }
-    // Cancelling while the transfer starts cuts it off.
     if ctx.shared.cancelled() && matches!(outcome, Outcome::Failed(_)) {
         return Outcome::Cancelled;
     }
     outcome
 }
 
-/// What installing came to while the package was still served.
 enum Done {
     Decided(Outcome),
-    /// update_engine failed with this code.
     Engine(i32),
-    /// The install script ended with this status; `wipe_cache` when it
-    /// asked for the cache partition to be erased after.
     Script { code: i32, wipe_cache: bool },
     Error(anyhow::Error),
 }
 
-/// Install the package the computer offers. `rescue` tells the computer
-/// how the install went, as rescue does, where sideload only says the
-/// package was read.
 fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, rescue: bool) -> (Outcome, Connection<Endpoints>) {
     let _ = kmsg(&format!("install: {} bytes offered in blocks of {}", offer.size, offer.block_size));
     let ending = |outcome: &Outcome| match (rescue, outcome) {
@@ -268,7 +208,6 @@ fn receive(ctx: &mut Context, mut conn: Connection<Endpoints>, offer: Offer, res
     (outcome, conn)
 }
 
-/// Install the file at `path`, read where it is.
 fn run_file(ctx: &mut Context, path: &Path) -> Outcome {
     let (file, offer) = match LocalFile::open(path) {
         Ok(opened) => opened,
@@ -278,8 +217,6 @@ fn run_file(ctx: &mut Context, path: &Path) -> Outcome {
     serve_local(ctx, file, offer, path)
 }
 
-/// Install the package the system left on a partition, read through the
-/// map of its blocks at `map`.
 fn run_mapped(ctx: &mut Context, map: &Path) -> Outcome {
     let (blocks, offer) = match BlockMap::read(map).and_then(|m| m.open()) {
         Ok(opened) => opened,
@@ -289,7 +226,6 @@ fn run_mapped(ctx: &mut Context, map: &Path) -> Outcome {
     serve_local(ctx, blocks, offer, map)
 }
 
-/// Serve a package the phone holds, which `path` names, and install it.
 fn serve_local<S: fuse::Source + Send + 'static>(ctx: &mut Context, source: S, offer: Offer, path: &Path) -> Outcome {
     if offer.size == 0 {
         return Outcome::Refused(Refusal::Unknown);
@@ -308,18 +244,12 @@ fn serve_local<S: fuse::Source + Send + 'static>(ctx: &mut Context, source: S, o
     conclude(done, served, ctx.origin)
 }
 
-/// Tell the computer the package has been read, so `adb sideload` ends; in
-/// rescue, how installing it went.
 fn finish(conn: &mut Connection<Endpoints>, message: &[u8; 8]) {
     if let Err(e) = conn.finish_with(message) {
         let _ = kmsg(&format!("install: the computer did not take the end of the transfer: {e}"));
     }
 }
 
-/// Serve `adb rescue` until the computer asks the phone to leave, the cable
-/// is pulled for good, or the screen cancels: each command is carried out
-/// and answered, and the screen hears how each install ended. Gives how
-/// the last install ended, or that none was made.
 fn rescue(ctx: &mut Context) -> Outcome {
     let (usb, endpoints) = match Usb::open(ctx.shared.clone()) {
         Ok(usb) => usb,
@@ -345,7 +275,6 @@ fn rescue(ctx: &mut Context) -> Outcome {
                     conn = back;
                     ctx.send(Event::Done(outcome.clone()));
                     last = outcome;
-                    // The screen may have left the page meanwhile.
                     if ctx.shared.cancelled() {
                         break Ok(());
                     }
@@ -364,14 +293,12 @@ fn rescue(ctx: &mut Context) -> Outcome {
                 conn.take(remote).and_then(|()| conn.answer(&adb::rescue_wiped(erased, size)))
             }
             Service::Reboot(target) => {
-                // Taken and closed at once, as the phone leaves.
                 if let Err(e) = conn.take(remote).and_then(|()| conn.end()) {
                     let _ = kmsg(&format!("rescue: the computer's reboot was not answered: {e}"));
                 }
                 ctx.send(Event::Reboot(target));
                 break Ok(());
             }
-            // What rescue does not serve is refused, as minadbd refuses it.
             _ => conn.send(&adb::Packet::new(adb::CLSE, 0, remote, [])),
         };
         if let Err(e) = served {
@@ -387,8 +314,6 @@ fn rescue(ctx: &mut Context) -> Outcome {
     }
 }
 
-/// What rescue answers for `name`: the phone's properties it may give, and
-/// its charge.
 fn rescue_answer(name: &str) -> String {
     adb::rescue_getprop(name, |key| match key {
         adb::BATTERY_LEVEL => skyward_info::battery_now().ok().flatten().map(|b| b.level.to_string()),
@@ -396,8 +321,6 @@ fn rescue_answer(name: &str) -> String {
     })
 }
 
-/// The outcome, given how serving the package went: a package that stopped
-/// being readable explains whatever failed after.
 fn conclude(done: Done, served: Result<Option<Fault>>, origin: Origin) -> Outcome {
     match (done, served) {
         (Done::Decided(outcome), served) => {
@@ -406,8 +329,6 @@ fn conclude(done: Done, served: Result<Option<Fault>>, origin: Origin) -> Outcom
             }
             outcome
         }
-        // A script that ended well read what it needed, whatever it tried
-        // to read past.
         (Done::Script { code: 0, wipe_cache }, served) => {
             if !matches!(served, Ok(None)) {
                 let _ = kmsg(&format!("install: the package stopped being readable while the script ran: {served:?}"));
@@ -432,9 +353,6 @@ fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done> {
     let _ = kmsg(&format!("install: {}", describe(&package)));
     match package {
         Package::Update(update) => update_system(ctx, mount, &update),
-        // The system asks for packages that install themselves, as Android's
-        // own recovery takes nothing else; an image needs someone to say
-        // where it goes.
         Package::Image(_) if matches!(ctx.origin, Origin::Asked { .. }) => Ok(Done::Decided(Outcome::Refused(Refusal::Image))),
         Package::Image(kind) => flash_image(ctx, kind, size),
         Package::Script => run_script(ctx, size),
@@ -443,10 +361,6 @@ fn install<S>(ctx: &mut Context, mount: &Mount<S>, size: u64) -> Result<Done> {
     }
 }
 
-/// Install the system in the package beside the installed one, once the
-/// user has picked how much room its root takes: its root goes into the
-/// data partition, which has to be open, and nothing of the installed
-/// system is written.
 fn install_system(ctx: &Context, contents: &skyward_systems::package::Contents) -> Result<Done> {
     let refused = |r| Ok(Done::Decided(Outcome::Refused(r)));
     if matches!(ctx.origin, Origin::Asked { .. }) {
@@ -471,7 +385,6 @@ fn install_system(ctx: &Context, contents: &skyward_systems::package::Contents) 
     if sizes.is_empty() {
         return refused(Refusal::NoRoom { least: contents.least(), room });
     }
-    // The screen may have left the page before it heard the package came.
     if ctx.shared.cancelled() {
         return Ok(Done::Decided(Outcome::Cancelled));
     }
@@ -503,10 +416,6 @@ fn install_system(ctx: &Context, contents: &skyward_systems::package::Contents) 
     Ok(Done::Decided(Outcome::SystemInstalled { name }))
 }
 
-/// Whether the install waits for the user to agree before it writes. A
-/// file a single tap picked always does, and so does an update from the
-/// computer that erases all user data; what the system asked for it agreed
-/// to itself, as with Android's own recovery.
 fn waits(origin: Origin, wipe: bool) -> bool {
     match origin {
         Origin::File => true,
@@ -515,9 +424,6 @@ fn waits(origin: Origin, wipe: bool) -> bool {
     }
 }
 
-/// Why there is too little charge to install, if there is: an install the
-/// system asked for that a restart cut off goes on whatever the charge, as
-/// Android's own recovery has it, the charge having been enough to start.
 fn short_of_charge(origin: Origin) -> Result<Option<Refusal>> {
     match origin {
         Origin::Asked { retry: true } => Ok(None),
@@ -525,10 +431,6 @@ fn short_of_charge(origin: Origin) -> Result<Option<Refusal>> {
     }
 }
 
-/// Put the installed system's boot set back into the boot partitions where
-/// the second system's is, before anything writes them: Skyward is the only
-/// one to write over the boot set it keeps track of, so that it never puts
-/// back one older than what is there.
 fn installed_boot_set() -> Result<()> {
     if skyward_systems::install::ensure_installed().context("put the installed system's boot set back")? {
         let _ = kmsg("install: the installed system's boot set went back into the boot partitions first");
@@ -536,8 +438,6 @@ fn installed_boot_set() -> Result<()> {
     Ok(())
 }
 
-/// Move off the installed system before the first write, where nothing has
-/// yet: rescue may install one package after another.
 fn detach_once(ctx: &mut Context) -> Result<()> {
     match ctx.detach.take() {
         Some(detach) => detach().context("move off the installed system"),
@@ -567,7 +467,6 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     if state != SnapshotState::None {
         return Ok(Done::Decided(Outcome::Refused(Refusal::Pending(state))));
     }
-    // The screen may have left the page before it heard the package came.
     if ctx.shared.cancelled() {
         return Ok(Done::Decided(Outcome::Cancelled));
     }
@@ -585,9 +484,6 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
     detach_once(ctx)?;
-    // update_engine mounts /metadata itself, as in the stock recovery, keeps
-    // the update's state there, and unmounts it when done. The recovery
-    // reads the state from it read-only again afterwards.
     let metadata = Path::new(METADATA);
     if skyward_block::mount::is_mount_point(metadata)? {
         skyward_block::mount::umount(metadata)?;
@@ -607,9 +503,6 @@ fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Res
     })
 }
 
-/// This recovery, held before an install writes, when the screen asked to
-/// keep it in the recovery partitions; none when it was started without
-/// being flashed.
 fn hold(ctx: &Context, current: Slot) -> Result<Option<Kept>> {
     if !ctx.options.keep {
         return Ok(None);
@@ -621,9 +514,6 @@ fn hold(ctx: &Context, current: Slot) -> Result<Option<Kept>> {
     Ok(kept)
 }
 
-/// Write this recovery back into the recovery partitions the install wrote
-/// over and into that of `next`, the slot that starts next, telling the
-/// screen how far it is and then how it went.
 fn reflash(ctx: &Context, kept: &Kept, next: Result<Slot>) {
     let slots = match next.and_then(|next| kept.wanted(next)) {
         Ok(slots) if slots.is_empty() => return,
@@ -652,7 +542,6 @@ fn remount_metadata() -> Result<()> {
     Ok(())
 }
 
-/// The phone, and the system on it as its mounted partitions tell.
 fn phone(slot: Slot) -> Result<Phone> {
     let props = skyward_info::installed_props(slot)?;
     let installed = match (props.get("ro.build.date.utc"), props.get("ro.build.version.security_patch")) {
@@ -669,19 +558,15 @@ fn phone(slot: Slot) -> Result<Phone> {
     })
 }
 
-/// Why there is too little charge to install, if there is.
 fn battery() -> Result<Option<Refusal>> {
     Ok(skyward_info::battery_now()?.as_ref().and_then(crate::battery_refusal))
 }
 
-/// A line update_engine wrote that matters here.
 enum Line {
     Status(Status),
     Log(Log),
 }
 
-/// Run update_engine on the package, telling the screen how far it is,
-/// and give its exit code.
 fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     let (status_read, status_write) = pipe()?;
     let status_fd = status_write.as_raw_fd();
@@ -691,7 +576,6 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // The program keeps its end of the status pipe across exec.
     unsafe {
         command.pre_exec(move || {
             if libc::fcntl(status_fd, libc::F_SETFD, 0) == -1 {
@@ -737,7 +621,6 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
             Ok(Line::Log(Log::Overwriting)) => ctx.send(Event::Overwriting),
             Ok(Line::Log(Log::Hashing { index, partition })) => verifying = Some((index, partition)),
             Err(RecvTimeoutError::Timeout) => {}
-            // Both outputs closed: the program has ended.
             Err(RecvTimeoutError::Disconnected) => break,
         }
         let now = if finishing {
@@ -764,8 +647,6 @@ fn apply<S>(ctx: &Context, mount: &Mount<S>, update: &Update) -> Result<i32> {
     }
 }
 
-/// Hand each line of `from` to `each` without its line ending, until the
-/// writer closes it.
 fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::Result<()> {
     let mut reader = BufReader::new(from);
     let mut line = Vec::new();
@@ -795,6 +676,10 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
         installed_boot_set()?;
     }
+    let kept = match partition == skyward_systems::store::BOOT && !image::device(dir, "recovery", Slot::A).exists() {
+        true => skyward_vab::current_slot()?.map(|slot| hold(ctx, slot)).transpose()?.flatten(),
+        false => None,
+    };
     let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     let mut told: Option<Instant> = None;
@@ -804,15 +689,12 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
             told = Some(Instant::now());
         }
     })?;
+    if let Some(kept) = &kept {
+        reflash(ctx, kept, skyward_vab::boot::next_slot().context("ask which slot starts next"));
+    }
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
 }
 
-/// Run the install script of the zip being served, `size` bytes, once the
-/// user agrees, or at once where the system asked for it, as Android's
-/// recovery runs one, among what the recoveries such scripts are written
-/// for give them: their shell at /sbin, and the slot's partitions mapped
-/// writable and unmounted. Where the screen asked for it, the zip is first
-/// checked to be signed with one of the phone's update keys.
 fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     if let Some(refusal) = short_of_charge(ctx.origin)? {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
@@ -825,12 +707,9 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             Verdict::Stopped => return Ok(Done::Decided(Outcome::Cancelled)),
         }
     }
-    // The screen may have left the page before it heard the package came.
     if ctx.shared.cancelled() {
         return Ok(Done::Decided(Outcome::Cancelled));
     }
-    // A script may write over any partition, so whoever is at the screen
-    // agrees to it first; the system agreed to what it asked for.
     if !matches!(ctx.origin, Origin::Asked { .. }) {
         ctx.send(Event::Script);
         match ctx.commands.recv() {
@@ -845,8 +724,6 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     let kept = hold(ctx, slot)?;
     installed_boot_set()?;
     detach_once(ctx)?;
-    // While an update is in flight, the slot's partitions in super are its
-    // and stay unmapped.
     let mapped = match skyward_vab::snapshot_state()? {
         SnapshotState::None => skyward_vab::map_slot(slot)?,
         state => {
@@ -859,9 +736,6 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     if let Err(e) = clean_up(&mounted, &mapped) {
         let _ = kmsg(&format!("install: not all the script left behind was taken away: {e:#}"));
     }
-    // What the script wrote over goes back however it ended, and so does
-    // the recovery of the slot that starts next, which a package that
-    // installs to the other slot switches to.
     if let Some(kept) = &kept {
         reflash(ctx, kept, skyward_vab::boot::next_slot().context("ask which slot starts next"));
     }
@@ -869,9 +743,6 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     Ok(Done::Script { code, wipe_cache })
 }
 
-/// Check the zip being served, `size` bytes, was signed with one of the
-/// phone's update keys, telling the screen how much of it the check has
-/// read; the screen leaving the page stops it.
 fn verify_signature(ctx: &Context, size: u64) -> Result<Verdict> {
     let certificates = File::open(signature::CERTIFICATES).with_context(|| format!("open {}", signature::CERTIFICATES))?;
     let keys = signature::keys(BufReader::new(certificates)).with_context(|| format!("read {}", signature::CERTIFICATES))?;
@@ -888,7 +759,6 @@ fn verify_signature(ctx: &Context, size: u64) -> Result<Verdict> {
     Ok(verdict)
 }
 
-/// Put the zip's install script where it runs from, for anyone to run.
 fn extract_script() -> Result<()> {
     let zip = File::open(fuse::PACKAGE).context("open the package")?;
     let mut zip = zip::ZipArchive::new(BufReader::new(zip)).context("read the zip directory")?;
@@ -903,7 +773,6 @@ fn extract_script() -> Result<()> {
     out.set_permissions(fs::Permissions::from_mode(0o755)).with_context(|| format!("make {BINARY} runnable"))
 }
 
-/// Give scripts written for other recoveries the shell they start with.
 fn shell_at_sbin() -> Result<()> {
     let link = Path::new(SBIN_SHELL);
     match fs::symlink_metadata(link) {
@@ -916,29 +785,20 @@ fn shell_at_sbin() -> Result<()> {
     symlink(SHELL, link).with_context(|| format!("link {SBIN_SHELL} to {SHELL}"))
 }
 
-/// A line one of the install script's outputs gave.
 enum Said {
     Request(Request),
-    /// A line on the request pipe asking for nothing this recovery knows.
     Unknown(String),
-    /// A line the script, or a program it ran, wrote to its output.
     Output(String),
 }
 
-/// A process group, all that is still in it ended once this is let go.
 struct Group(libc::pid_t);
 
 impl Drop for Group {
     fn drop(&mut self) {
-        // A group that has ended already is no one's to end.
         unsafe { libc::kill(-self.0, libc::SIGKILL) };
     }
 }
 
-/// Run the install script: show what it prints and how far it says it is,
-/// keep all it asks for and writes in the log, and give how it ended and
-/// whether it asked for the cache partition to be erased after. What it
-/// leaves running is ended with it.
 fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
     let (requests_read, requests_write) = pipe()?;
@@ -946,8 +806,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let fd = requests_write.as_raw_fd();
     let mut command = std::process::Command::new(BINARY);
     command.args([API_VERSION, &fd.to_string(), fuse::PACKAGE]);
-    // A script started again after a restart cut it off is told so, as
-    // Android's own recovery tells it, to pick up where it was.
     if ctx.origin == (Origin::Asked { retry: true }) {
         command.arg(RETRY);
     }
@@ -957,9 +815,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(output_write.try_clone().context("share the script's output")?))
         .stderr(Stdio::from(output_write));
-    // The script keeps its end of the request pipe across exec, makes files
-    // as Android's recovery has it make them, and leads a process group of
-    // its own, for what it leaves running to be ended with it.
     unsafe {
         command.pre_exec(move || {
             libc::umask(0o022);
@@ -972,14 +827,11 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut child = command.spawn().with_context(|| format!("start {BINARY}"))?;
     let group = Group(child.id() as libc::pid_t);
     ctx.send(Event::Running);
-    // The outputs close once only the script and what it runs hold them.
     drop(command);
     drop(requests_write);
 
     let (tx, rx) = mpsc::channel();
     let output_tx = tx.clone();
-    // Neither reader is waited for: what the script leaves running may
-    // hold its outputs open past its end.
     thread::spawn(move || {
         lines(File::from(requests_read), |line| {
             let said = script::parse(line).map_or_else(|| Said::Unknown(line.to_string()), Said::Request);
@@ -1003,8 +855,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut others_ended = false;
     loop {
         match rx.recv_timeout(PROGRESS_EVERY) {
-            // An empty line only ends the one before it, in the recoveries
-            // these scripts are written for.
             Ok(Said::Request(Request::Print(text))) if text.is_empty() => {}
             Ok(Said::Request(Request::Print(text))) => {
                 writeln!(log, "{text}").context("write the log")?;
@@ -1020,7 +870,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
             Ok(Said::Unknown(line)) => writeln!(log, "[unknown request] {line}").context("write the log")?,
             Ok(Said::Output(line)) => writeln!(log, "{line}").context("write the log")?,
             Err(RecvTimeoutError::Timeout) => {}
-            // Every output has closed: the script, and all it ran, are done.
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(now) = thousandths(&bar).filter(|&now| shown != Some(now) && told.elapsed() >= PROGRESS_EVERY) {
@@ -1042,8 +891,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
             }
         }
     }
-    // Where the script got last, which telling the screen at most so often
-    // may have held back.
     if let Some(last) = thousandths(&bar).filter(|&last| shown != Some(last)) {
         ctx.send(Event::Progress(Stage::Script { thousandths: last }));
     }
@@ -1055,10 +902,6 @@ fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     Ok((status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)), wipe_cache))
 }
 
-/// Take away what the script mounted and left mounted, the latest first,
-/// and undo how the slot's partitions were mapped for it; and mount
-/// /metadata again as the recovery keeps it, for a script that took it
-/// away.
 fn clean_up(before: &[(i32, PathBuf)], mapped: &SlotMaps) -> Result<()> {
     let kept: HashSet<i32> = before.iter().map(|(id, _)| *id).collect();
     for (_, point) in skyward_block::mount::mount_ids()?.into_iter().rev().filter(|(id, _)| !kept.contains(id)) {
@@ -1068,7 +911,6 @@ fn clean_up(before: &[(i32, PathBuf)], mapped: &SlotMaps) -> Result<()> {
     remount_metadata()
 }
 
-/// What the phone tells the computer it is.
 fn banner(mode: &str) -> Vec<u8> {
     let p = |name| prop(name).unwrap_or_default();
     adb::banner(mode, &p("ro.product.name"), &p("ro.product.model"), &p("ro.product.device"))
@@ -1078,7 +920,6 @@ fn failed(e: anyhow::Error) -> Outcome {
     Outcome::Failed(Failure::Error(format!("{e:#}")))
 }
 
-/// A pipe, both ends closed on exec.
 fn pipe() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {

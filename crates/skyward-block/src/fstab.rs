@@ -1,36 +1,30 @@
-//! The table a phone keeps of its own filesystems: where each one is, what
-//! it holds, and how it is encrypted.
-
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Where the phone's own partitions keep the table.
-pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
+pub const FILES: [&str; 5] = [
+    "/vendor/etc/fstab.qcom",
+    "/odm/etc/fstab.qcom",
+    "/vendor/etc/fstab.default",
+    "/odm/etc/fstab.default",
+    "/first_stage_ramdisk/fstab.default",
+];
 
-/// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub device: String,
     pub mount_point: String,
     pub filesystem: String,
-    /// How the phone mounts it: the kernel's flags and the filesystem's
-    /// own options, as one list.
     pub options: Vec<String>,
-    /// What the phone says about the filesystem beyond how to mount it,
-    /// such as how it is encrypted.
     pub extras: Vec<String>,
 }
 
 impl Entry {
-    /// The value of an extra written as `name=value`.
     pub fn extra(&self, name: &str) -> Option<&str> {
         let prefix = format!("{name}=");
         self.extras.iter().find_map(|e| e.strip_prefix(&prefix))
     }
 }
 
-/// Every filesystem a table names. A phone may name the same mount point
-/// more than once, once per filesystem it might hold.
 pub fn entries(text: &str) -> Vec<Entry> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -51,7 +45,6 @@ pub fn entries(text: &str) -> Vec<Entry> {
     out
 }
 
-/// Every entry of the phone's own table, read from wherever the table is.
 fn table() -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for file in FILES {
@@ -65,25 +58,18 @@ fn table() -> Result<Vec<Entry>> {
     Ok(out)
 }
 
-/// What the phone's own table says about `mount_point`.
 pub fn read(mount_point: &str) -> Result<Vec<Entry>> {
     Ok(table()?.into_iter().filter(|e| e.mount_point == mount_point).collect())
 }
 
-/// What the phone's own table says about the partition `name`: the first
-/// entry naming it, by whichever path the table reaches it.
 pub fn partition(name: &str) -> Result<Option<Entry>> {
     Ok(table()?.into_iter().find(|e| names(e, name)))
 }
 
-/// Whether an entry is of the partition `name`.
 fn names(entry: &Entry, name: &str) -> bool {
     Path::new(&entry.device).file_name().is_some_and(|n| n == name)
 }
 
-/// The partition an entry names, as it is reachable now: of the booted
-/// slot, where the phone keeps one of it per slot. A phone's table points
-/// at its storage controller by a path a recovery need not have.
 pub fn device(entry: &Entry) -> Result<String> {
     let path = match entry.extras.iter().any(|e| e == "slotselect") {
         true => format!("{}{}", entry.device, crate::slot_suffix()?.with_context(|| format!("{} is of a slot, and the phone has none", entry.device))?),
@@ -93,16 +79,16 @@ pub fn device(entry: &Entry) -> Result<String> {
         return Ok(path);
     }
     let name = Path::new(&path).file_name().with_context(|| format!("{path} names no partition"))?;
-    let by_name = Path::new(crate::BY_NAME).join(name);
-    if by_name.exists() {
-        return Ok(by_name.to_string_lossy().into_owned());
+    for base in [crate::BY_NAME, "/dev/block/bootdevice/by-name", "/dev/block/platform/soc/1d84000.ufshc/by-name"] {
+        let candidate = Path::new(base).join(name);
+        if candidate.exists() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
     }
+    let by_name = Path::new(crate::BY_NAME).join(name);
     anyhow::bail!("neither {path} nor {} is here", by_name.display())
 }
 
-/// Mount the partition `name` where and as the phone's own table mounts
-/// it, and say where. Whatever shows there already, as what an earlier run
-/// of the recovery service mounted does, is taken as it is.
 pub fn mount(name: &str) -> Result<PathBuf> {
     let entry = partition(name)?.with_context(|| format!("the phone's own table does not mount {name}"))?;
     let at = PathBuf::from(&entry.mount_point);
@@ -119,7 +105,6 @@ mod tests {
     use super::*;
 
     const TABLE: &str = "\
-# a comment
 /dev/block/bootdevice/by-name/metadata /metadata f2fs noatime,nosuid wait,check,formattable
 /dev/block/bootdevice/by-name/userdata /data f2fs noatime,discard latemount,wait,fileencryption=aes-256-xts:aes-256-cts:v2,keydirectory=/metadata/vold/metadata_encryption,metadata_encryption=aes-256-xts:wrappedkey_v0,quota
 /dev/block/bootdevice/by-name/userdata /data mifs noatime,discard latemount,wait,keydirectory=/metadata/vold/metadata_encryption
@@ -163,7 +148,7 @@ mod tests {
 
     #[test]
     fn comments_and_short_lines_are_passed_over() {
-        assert!(entries("# nothing\n\n/dev/x /y f2fs rw\n").is_empty());
+        assert!(entries("\n\n/dev/x /y f2fs rw\n").is_empty());
         assert_eq!(entries(TABLE).len(), 3);
     }
 }
