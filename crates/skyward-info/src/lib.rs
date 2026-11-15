@@ -11,36 +11,23 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-/// Version of this build, shown on the About page.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const CPU: &str = "/sys/devices/system/cpu";
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 const SYS_BLOCK: &str = "/sys/class/block";
 
-/// What the recovery shows about the device. A source that may legitimately
-/// be absent (no battery driver loaded, build properties missing from the
-/// recovery ramdisk) is an `Option`; a source that exists but cannot be read
-/// or parsed is an error. The installed system's partitions are the one
-/// source the recovery has to do without: where their build properties
-/// cannot be read, the details are as where nothing is mounted, and the
-/// log says why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceInfo {
     pub model: String,
     pub codename: String,
     pub soc: Option<skyward_config::Names>,
     pub cpu: Cpu,
-    /// `MemTotal` in KiB.
     pub ram_kib: u64,
-    /// Panel resolution as width × height in pixels.
     pub panel: Option<(u32, u32)>,
-    /// Marketed screen diagonal in inches.
     pub screen: Option<f32>,
     pub os_version: Option<String>,
     pub android: Option<String>,
-    /// The locale the installed system is built to start in, such as
-    /// `zh-CN`.
     pub locale: Option<String>,
     pub security_patch: Option<PatchLevel>,
     pub kernel: String,
@@ -51,7 +38,6 @@ pub struct DeviceInfo {
     pub boot: Boot,
 }
 
-/// `ro.build.version.security_patch`, a calendar date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PatchLevel {
     pub year: u16,
@@ -76,17 +62,12 @@ impl FromStr for PatchLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cpu {
     pub cores: u32,
-    /// Highest `cpuinfo_max_freq` across cores in kHz; absent until the
-    /// cpufreq driver is loaded.
     pub max_khz: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Storage {
-    /// Size of the userdata partition in bytes.
     pub total: u64,
-    /// Free bytes on /data, counted like `File.getFreeSpace()`, while /data
-    /// is mounted.
     pub free: Option<u64>,
 }
 
@@ -103,27 +84,17 @@ pub enum Charge {
 pub struct Battery {
     pub level: u8,
     pub charge: Charge,
-    /// Tenths of a degree Celsius.
     pub temp: Option<i32>,
-    /// Kernel `POWER_SUPPLY_HEALTH` text such as `Good`.
     pub health: Option<String>,
     pub cycles: Option<u32>,
-    /// Design capacity in µAh.
     pub design: Option<u64>,
-    /// Present full-charge capacity in µAh.
     pub full: Option<u64>,
-    /// Voltage in µV.
     pub voltage: Option<u64>,
-    /// A charger charging it quickly, as Xiaomi's Qualcomm phones tell
-    /// beside their power supplies.
     pub quick: bool,
-    /// A charger or a computer powers the phone, by cable or wirelessly: a
-    /// power supply besides the battery is online.
     pub plugged: bool,
 }
 
 impl Battery {
-    /// Whether it charges, or is full and topped up.
     pub fn charging(&self) -> bool {
         matches!(self.charge, Charge::Charging | Charge::Full)
     }
@@ -131,9 +102,7 @@ impl Battery {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boot {
-    /// From `androidboot.vbmeta.device_state`.
     pub unlocked: Option<bool>,
-    /// `androidboot.verifiedbootstate`: green, yellow, orange or red.
     pub verified: Option<String>,
 }
 
@@ -141,9 +110,6 @@ pub fn collect(cfg: &DeviceConfig) -> Result<DeviceInfo> {
     collect_with(cfg, battery_now()?)
 }
 
-/// The phone's details with `battery` for the battery, read apart: by one
-/// who reads it oftener than the rest, or who goes on without it where it
-/// cannot be read, as the pages do when they come up.
 pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<DeviceInfo> {
     let d = &cfg.display;
     let unlocked = match skyward_block::boot_param("androidboot.vbmeta.device_state")?.as_deref() {
@@ -154,8 +120,6 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
     };
     let system = SystemProps::current()?;
     Ok(DeviceInfo {
-        // The system names the exact edition; the configured model covers a
-        // system whose partitions are not mounted.
         model: system.get("ro.product.marketname").unwrap_or_else(|| cfg.device.model.clone()),
         codename: cfg.device.codename.clone(),
         soc: cfg.device.soc.clone(),
@@ -163,7 +127,11 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
         ram_kib: mem_total(&read("/proc/meminfo")?)?,
         panel: (d.width > 0 && d.height > 0).then_some((d.width, d.height)),
         screen: d.diagonal,
-        os_version: system.get(&cfg.device.os_version_prop),
+        os_version: system
+            .get(&cfg.device.os_version_prop)
+            .or_else(|| system.get("ro.build.nothing.version"))
+            .or_else(|| system.get("ro.mi.os.version.incremental"))
+            .or_else(|| system.get("ro.build.display.id")),
         android: system.get("ro.build.version.release"),
         locale: system.get("ro.product.locale"),
         security_patch: system.get("ro.build.version.security_patch").map(|s| s.parse()).transpose()?,
@@ -176,23 +144,14 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
     })
 }
 
-/// Build properties of the system the About page describes.
 enum SystemProps {
-    /// Android is running and keeps them in its property area.
     Running,
-    /// Recovery is running; they come from the build.prop files of the
-    /// installed system's mounted partitions, none when nothing is mounted.
     Installed(HashMap<String, String>),
 }
 
-/// Why the installed system's properties could last not be read, as the
-/// log was told: the details are collected again and again.
 static PROPS_UNREAD: Mutex<ToldOnce> = Mutex::new(ToldOnce::new());
 
 impl SystemProps {
-    /// A recovery has to come up whatever state the installed system's
-    /// partitions are in, so properties that cannot be read are none, as
-    /// where nothing is mounted, and the log is told why.
     fn current() -> Result<SystemProps> {
         if !skyward_config::ramdisk::in_recovery() {
             return Ok(SystemProps::Running);
@@ -216,19 +175,10 @@ impl SystemProps {
     }
 }
 
-/// The order init reads build.prop files in at boot; later files override
-/// earlier ones.
 const PROP_ORDER: [&str; 8] = ["system", "system_ext", "system_dlkm", "vendor", "vendor_dlkm", "odm_dlkm", "odm", "product"];
 
-/// What init names the properties the bootloader passes.
 const BOOT_PROPS: &str = "ro.boot.";
 
-/// The installed system's build properties from its mounted partitions, in
-/// init's order. Partitions init does not list, such as Xiaomi's mi_ext,
-/// come after the ones it does. Init has the properties the bootloader
-/// passes before it reads any of these, and a file may import another named
-/// after them, as Xiaomi's odm imports what each hardware version sets; so
-/// they come first here too, the same in a recovery as in the system.
 pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
     let base = |m: &skyward_vab::Mounted| -> String {
         m.partition.strip_suffix(slot.suffix()).expect("mounted partitions carry the slot suffix").to_string()
@@ -261,7 +211,6 @@ fn read(path: impl AsRef<Path>) -> Result<String> {
     Ok(fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?.trim().to_string())
 }
 
-/// `None` when the file does not exist; any other failure is an error.
 fn read_opt(path: impl AsRef<Path>) -> Result<Option<String>> {
     let p = path.as_ref();
     match fs::read_to_string(p) {
@@ -297,7 +246,6 @@ fn cpu(root: &Path) -> Result<Cpu> {
     Ok(Cpu { cores: ids.len() as u32, max_khz })
 }
 
-/// Kernel cpulist syntax: comma-separated ids and inclusive ranges (`0-3,6`).
 fn cpulist(s: &str) -> Result<Vec<u32>> {
     let mut ids = Vec::new();
     for part in s.split(',') {
@@ -346,8 +294,6 @@ fn storage() -> Result<Storage> {
     Ok(Storage { total: sectors * 512, free })
 }
 
-/// A directory is a mountpoint when it lives on a different filesystem from
-/// its parent.
 fn is_mountpoint(path: &Path) -> Result<bool> {
     let parent = path.parent().ok_or_else(|| anyhow!("{} has no parent", path.display()))?;
     let here = fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
@@ -355,13 +301,10 @@ fn is_mountpoint(path: &Path) -> Result<bool> {
     Ok(here.dev() != up.dev())
 }
 
-/// The battery as it is now.
 pub fn battery_now() -> Result<Option<Battery>> {
     battery(Path::new(POWER_SUPPLY))
 }
 
-/// The first power supply whose type is `Battery`; `None` while no fuel-gauge
-/// driver is loaded.
 fn battery(root: &Path) -> Result<Option<Battery>> {
     let entries = match fs::read_dir(root) {
         Ok(e) => e,
@@ -399,24 +342,16 @@ fn battery(root: &Path) -> Result<Option<Battery>> {
         design: parse_opt(dir.join("charge_full_design"), "charge_full_design")?,
         full: parse_opt(dir.join("charge_full"), "charge_full")?,
         voltage: parse_opt(dir.join("voltage_now"), "voltage_now")?,
-        // How quickly the charger charges: 0 normally, then fast, flash,
-        // turbo and super, which the stock SystemUI all counts quick.
         quick: parse_opt::<u8>(root.with_file_name("qcom-battery").join("quick_charge_type"), "quick_charge_type")?.is_some_and(|k| (1..=4).contains(&k)),
         plugged,
     }))
 }
 
-/// Whether the power supply in `dir` says a charger or a computer is
-/// attached to it.
 fn online(dir: &Path) -> Result<bool> {
     let path = dir.join("online");
     said_online(fs::read_to_string(&path)).with_context(|| format!("read {}", path.display()))
 }
 
-/// What a power supply's `online` file says, as reading it went. A supply
-/// without one has no say, and one whose driver cannot tell yet, as
-/// Qualcomm's USB-C connector cannot early in a boot, answers "try again":
-/// either is taken as offline, and the next reading asks again.
 fn said_online(read: std::io::Result<String>) -> std::io::Result<bool> {
     match read {
         Ok(s) => Ok(s.trim() == "1"),
@@ -440,7 +375,6 @@ mod tests {
 
     #[test]
     fn mem_total_from_meminfo() {
-        // Values reported by a Xiaomi 17 Ultra.
         let text = "MemTotal:       15472464 kB\nMemFree:         2381608 kB\n";
         assert_eq!(mem_total(text).unwrap(), 15_472_464);
         assert!(mem_total("MemFree: 1 kB\n").is_err());
@@ -462,7 +396,6 @@ mod tests {
 
     #[test]
     fn a_battery_charged_quickly_says_so_beside_the_power_supplies() {
-        // The 17 Ultra's in the recovery, on a charger it charges slowly on.
         let class = tempfile::tempdir().unwrap();
         let supplies = class.path().join("power_supply");
         let bat = supplies.join("battery");
@@ -482,7 +415,6 @@ mod tests {
 
     #[test]
     fn the_phone_is_plugged_in_while_a_power_supply_besides_the_battery_is_online() {
-        // The 13 Ultra's power supplies in the recovery.
         let class = tempfile::tempdir().unwrap();
         let supplies = class.path().join("power_supply");
         let supply = |name: &str, files: &[(&str, &str)]| {
