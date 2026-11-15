@@ -1,0 +1,43 @@
+[device]
+codename = "spacewar"
+brand = "Nothing"
+model = "Nothing Phone (1)"
+ab = true
+soc = { hans = "骁龙® 778G+ 5G 移动平台", hant = "Snapdragon® 778G+ 5G 行動平台", en = "Snapdragon® 778G+ 5G Mobile Platform" }
+os_version_prop = "ro.build.display.id"
+
+[display]
+width = 1080
+height = 2400
+density = 420
+diagonal = 6.55
+corner_radius = 102
+
+[modules]
+sources = ["vendor_boot", "vendor"]
+load = []
+
+[firmware]
+partition = "modem"
+
+[partitions]
+mounted = ["persist"]
+
+[wipe]
+logs = [
+    "/data/vendor/diag",
+    "/data/vendor/log",
+    "/data/vendor/ramdump",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wlan_logs",
+]
+
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+data_skipped = [
+    "vendor/tzstorage",
+    "vendor/qtee",
+    "vendor/fingerprint",
+    "vendor/goodix",
+]
