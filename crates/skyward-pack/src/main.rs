@@ -11,7 +11,6 @@ mod described;
 
 use skyward_bootimg::{BootImage, Ramdisk};
 
-/// Builds Skyward recovery images from a device's own stock images.
 #[derive(Parser)]
 #[command(name = "skyward-pack")]
 struct Cli {
@@ -21,86 +20,46 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Print an image's header and the files in its ramdisk.
     List { image: PathBuf },
-    /// Write one ramdisk file to stdout.
     Cat { image: PathBuf, path: String },
-    /// Unpack and pack an image's ramdisk unchanged, to check that a rebuilt
-    /// archive keeps every entry.
     Repack { image: PathBuf, out: PathBuf },
-    /// Join a kernel and another image's ramdisk into one boot image.
     Boot {
-        /// Image holding the kernel (the device's boot partition).
         #[arg(long)]
         kernel: PathBuf,
-        /// Image holding the ramdisk.
         #[arg(long)]
         ramdisk: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
-    /// Build a Skyward recovery image on top of the device's stock recovery:
-    /// its init, adbd, SELinux policy and libraries stay, the recovery
-    /// service becomes Skyward. The image fills the whole partition and ends
-    /// in an unsigned AVB footer of its own.
     Recovery {
-        /// The device's stock recovery image: the whole partition, as the
-        /// phone or a full update package holds it, ending in its AVB footer.
         #[arg(long)]
         stock: PathBuf,
-        /// Skyward built for the device (aarch64-linux-android).
         #[arg(long)]
         binary: PathBuf,
-        /// The first program of a system installed beside the installed
-        /// one, skyward-system-init built for the device and linked
-        /// statically.
         #[arg(long)]
         system_init: PathBuf,
-        /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
         config: PathBuf,
-        /// The UI typeface.
         #[arg(long)]
         font: PathBuf,
-        /// The terminal's monospaced typeface.
         #[arg(long)]
         mono: PathBuf,
-        /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
-    /// Print the stock build a device's recovery is made on, as lines of
-    /// name=value: its version, where its full update package is, and the
-    /// SHA-256 of the recovery partition in that package. Given somewhere
-    /// to write it, also take that partition out of the package on its
-    /// server, reading only what the partition takes, and write it there
-    /// once its SHA-256 is that one.
     Stock {
-        /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
         config: PathBuf,
-        /// Where to write the stock recovery image.
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Take what a device's own partitions say of the programs they carry
-    /// out of its stock build's full update package on its server: the
-    /// init scripts, the service descriptions, the accounts and the build
-    /// properties of each partition that carries such programs, written
-    /// under `out` as the partition and then the path in it. Only the
-    /// parts of the package that hold these files are downloaded, each
-    /// checked against the package's own sum of it.
     Described {
-        /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
         config: PathBuf,
-        /// A partition to take them out of; vendor, odm and system_ext
-        /// when none is named.
         #[arg(long = "partition")]
         partitions: Vec<String>,
-        /// The folder to write the files under, which is not there yet.
         #[arg(long)]
         out: PathBuf,
     },
@@ -117,7 +76,7 @@ fn main() -> Result<()> {
         }
         Cmd::Repack { image, out } => {
             let mut img = BootImage::read(&image)?;
-            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode()?;
+            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode_matching(&img.ramdisk)?;
             write(&out, &img, &img.to_bytes()?)
         }
         Cmd::Boot { kernel, ramdisk, out } => {
@@ -126,51 +85,43 @@ fn main() -> Result<()> {
             write(&out, &img, &img.to_bytes()?)
         }
         Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
-            let size = partition_size(&stock)?;
-            let mut img = BootImage::read(&stock)?;
+            let stock_bytes = std::fs::read(&stock).with_context(|| format!("read {}", stock.display()))?;
+            let size = stock_bytes.len();
+            let avb_part = skyward_bootimg::avb_partition_name(&stock_bytes).unwrap_or("recovery");
+            let mut img = BootImage::parse(&stock_bytes)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
-            // A stock recovery ramdisk has no third-party tree; refuse to build
-            // on top of another custom recovery.
             if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
                 anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
             }
+            rd.prune_stock_recovery_assets();
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
-            // Install scripts look for the commands a stock recovery lacks
-            // among its programs, and its unzip there too, a link to ziptool
-            // until it points here; the recovery binary is each of them.
             let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
             for command in paths::COMMANDS {
                 rd.link(command, recovery)?;
             }
-            rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
-            rd.add(paths::CONFIG, 0o644, read(&config)?)?;
-            rd.add(paths::FONT, 0o644, read(&font)?)?;
-            rd.add(paths::MONO, 0o644, read(&mono)?)?;
-            rd.add(paths::MONO_LICENSE, 0o644, read(&mono_license)?)?;
-            // A stock ramdisk may run logd without any scheduling profiles,
-            // and logd stops as soon as it cannot find the one it asks for.
+            rd.upsert(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
+            rd.upsert(paths::CONFIG, 0o644, read(&config)?)?;
+            rd.upsert(paths::FONT, 0o644, read(&font)?)?;
+            rd.upsert(paths::MONO, 0o644, read(&mono)?)?;
+            rd.upsert(paths::MONO_LICENSE, 0o644, read(&mono_license)?)?;
             if rd.find(paths::TASK_PROFILES).is_none() {
                 rd.add(paths::TASK_PROFILES, 0o644, TASK_PROFILES.to_vec())?;
             }
-            rd.add(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
-            // On an unlocked device adbd keeps root when ro.secure is 0 and
-            // lets any computer in without authorization when ro.adb.secure is
-            // 0; init lets a later line of a property file override an earlier
-            // one. update_engine refuses a package built before the recovery
-            // itself unless both of the last two are set; the recovery checks
-            // packages against the installed system instead.
+            rd.upsert(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
             let stock_props = &rd
                 .find(paths::PROP_DEFAULT)
                 .with_context(|| format!("{} is not in the ramdisk", paths::PROP_DEFAULT))?
                 .data;
             let mut props = without(stock_props, &BUILD_VERSION);
-            props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
+            if !props.ends_with(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n") {
+                props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
+            }
             rd.replace(paths::PROP_DEFAULT, props)?;
-            img.ramdisk = rd.encode()?;
+            img.ramdisk = rd.encode_matching(&img.ramdisk)?;
             let bytes = img.to_bytes()?;
-            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
+            write(&out, &img, &avb::footed(&bytes, avb_part, size, &Sha256::digest(&bytes))?)
         }
         Cmd::Stock { config, out } => {
             let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
@@ -188,16 +139,11 @@ fn main() -> Result<()> {
     }
 }
 
-/// The partition a recovery is made on, as a full update package names it.
 const RECOVERY: &str = "recovery";
 
-/// Take the recovery partition out of the stock build's full update package
-/// on its server, reading only what that partition takes of it, and write it
-/// to `out` once its SHA-256 is the one the configuration names.
 fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
     let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
-    // Taken out beside where it goes, so it is moved there whole.
     let work = tempfile::Builder::new().prefix(".stock").tempdir_in(parent).with_context(|| format!("make a folder in {}", parent.display()))?;
     let payload = unpayload::Payload::open_url(&stock.package).with_context(|| format!("open {}", stock.package))?;
     let options = unpayload::ExtractOptions { output_dir: work.path().to_path_buf(), partitions: vec![RECOVERY.into()], ..Default::default() };
@@ -219,8 +165,6 @@ fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> 
     Ok(())
 }
 
-/// The size of the partition `stock` fills: all of it, as the phone and a
-/// full update package hold it, which its AVB footer ends.
 fn partition_size(stock: &Path) -> Result<usize> {
     let mut file = File::open(stock).with_context(|| format!("open {}", stock.display()))?;
     let size = file.metadata().with_context(|| format!("stat {}", stock.display()))?.len();
@@ -237,25 +181,12 @@ fn partition_size(stock: &Path) -> Result<usize> {
     Ok(usize::try_from(size)?)
 }
 
-/// What a recovery image says about the build it is: the version and patch
-/// levels of its own ramdisk's system and vendor partition, which are older
-/// than those installed beside it whenever the phone has taken an update.
-/// The phone's secure services read these to tell the secure world which
-/// build is running, and keys the installed system made are refused when
-/// they say the wrong one, so they are left out here for the recovery to
-/// fill in from the installed system once it has that mounted.
 const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
 
-/// The scheduling profiles a recovery's programs look up by name. A
-/// recovery's cgroup setup mounts no controllers, so of all a system's
-/// profiles do, only the timer slack applies here.
 const TASK_PROFILES: &[u8] = include_bytes!("task_profiles.json");
 
-/// The init rules that give the USB port file transfer beside adb, which a
-/// stock recovery does not offer.
 const MTP_RC: &[u8] = include_bytes!("mtp.rc");
 
-/// A property file without the lines that set any of `names`.
 fn without(props: &[u8], names: &[&str]) -> Vec<u8> {
     let mut out = Vec::with_capacity(props.len());
     for line in props.split_inclusive(|b| *b == b'\n') {
@@ -267,7 +198,6 @@ fn without(props: &[u8], names: &[&str]) -> Vec<u8> {
     out
 }
 
-/// Write `bytes`, the image `img` makes, to `out`.
 fn write(out: &Path, img: &BootImage, bytes: &[u8]) -> Result<()> {
     std::fs::write(out, bytes).with_context(|| format!("write {}", out.display()))?;
     println!(
@@ -325,8 +255,6 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
             profiles[key].as_array().expect("a list").iter().map(|p| p["Name"].as_str().expect("a name").to_string()).collect()
         };
         let (plain, aggregate) = (names("Profiles"), names("AggregateProfiles"));
-        // What libprocessgroup asks for when a program sets its scheduling
-        // policy, and what the recovery's own init scripts give logd.
         let asked = [
             "SCHED_SP_DEFAULT",
             "SCHED_SP_BACKGROUND",

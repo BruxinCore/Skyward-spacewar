@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use cpio::{NewcBuilder, NewcReader};
+use sha2::{Digest, Sha256};
+use skyward_config::ramdisk as paths;
 use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -8,8 +10,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// One cpio entry with the metadata the kernel restores when it unpacks the
-/// archive into rootfs.
 #[derive(Clone)]
 pub struct Entry {
     pub name: String,
@@ -32,9 +32,11 @@ const S_IFBLK: u32 = 0o060000;
 const S_IFIFO: u32 = 0o010000;
 const S_IFSOCK: u32 = 0o140000;
 
-/// The permissions a stock ramdisk gives its links, such as the commands
-/// in system/bin that stand for toybox.
 const LINK_MODE: u32 = 0o755;
+const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
+const NEWC_MAGIC: &[u8] = b"070701";
+const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
+const SKYWARD_PROPS: &[u8] = b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n";
 
 impl Entry {
     pub fn is_dir(&self) -> bool {
@@ -42,18 +44,20 @@ impl Entry {
     }
 }
 
-/// An initramfs held in memory, so entries keep their owners, modes and
-/// device numbers exactly as the archive had them.
 pub struct Ramdisk {
     pub entries: Vec<Entry>,
 }
 
 impl Ramdisk {
-    /// Unpack an LZ4 (legacy framing) compressed newc archive, as Android
-    /// boot images carry.
     pub fn decode(compressed: &[u8]) -> Result<Self> {
         let mut cpio = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        if compressed.starts_with(GZIP_MAGIC) {
+            flate2::read::MultiGzDecoder::new(compressed).read_to_end(&mut cpio).context("gzip decode")?;
+        } else if compressed.starts_with(NEWC_MAGIC) {
+            cpio.extend_from_slice(compressed);
+        } else {
+            lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        }
         let mut entries = Vec::new();
         let mut rest = Cursor::new(cpio.as_slice());
         loop {
@@ -80,14 +84,31 @@ impl Ramdisk {
         Ok(Ramdisk { entries })
     }
 
-    /// Pack as a newc archive compressed the way AOSP packs boot ramdisks,
-    /// with the reference `lz4` tool in legacy framing (the kernel's initramfs
-    /// unpacker reads no other LZ4 framing) at its highest compression.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        lz4_tool(&self.archive()?)
+        let raw = self.archive()?;
+        lz4_tool(&raw).or_else(|_| Ok(lz4_legacy(&raw)))
     }
 
-    /// Pack as a newc archive, uncompressed.
+    pub fn encode_gzip(&self) -> Result<Vec<u8>> {
+        gzip_encode(&self.archive()?)
+    }
+
+    pub fn encode_matching(&self, original: &[u8]) -> Result<Vec<u8>> {
+        if original.starts_with(GZIP_MAGIC) {
+            self.encode_gzip()
+        } else {
+            self.encode()
+        }
+    }
+
+    pub fn encode_in_process_matching(&self, original: &[u8]) -> Result<Vec<u8>> {
+        if original.starts_with(GZIP_MAGIC) {
+            self.encode_gzip()
+        } else {
+            Ok(lz4_legacy(&self.archive()?))
+        }
+    }
+
     pub fn archive(&self) -> Result<Vec<u8>> {
         let mut cpio = Vec::new();
         for (ino, e) in self.entries.iter().enumerate() {
@@ -115,13 +136,6 @@ impl Ramdisk {
         self.entries.iter().find(|e| e.name == name)
     }
 
-    /// Unpack the archive over `root`, as the kernel unpacks each archive of
-    /// an initramfs over those before it: an entry takes the place of what
-    /// is there of another kind, a folder already there stays, and each
-    /// entry gets the archive's owner, mode and time, a folder's time once
-    /// everything in it is in. Where a file is already there, the entry is
-    /// made anew, where the kernel writes over it, so that a program
-    /// running from that file is left alone.
     pub fn unpack(&self, root: &Path) -> Result<()> {
         for e in &self.entries {
             let path = root.join(&e.name);
@@ -134,7 +148,6 @@ impl Ramdisk {
         Ok(())
     }
 
-    /// Replace a regular file's contents, keeping its owner and mode.
     pub fn replace(&mut self, name: &str, data: Vec<u8>) -> Result<()> {
         match self.entries.iter_mut().find(|e| e.name == name) {
             Some(e) if e.mode & S_IFMT == S_IFREG => {
@@ -146,14 +159,18 @@ impl Ramdisk {
         }
     }
 
-    /// Add a root-owned regular file, creating missing parent directories.
     pub fn add(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
         self.insert(name, S_IFREG | mode, data)
     }
 
-    /// Point `name` to `target`: a link already there is pointed anew, and
-    /// otherwise a root-owned link is added, creating missing parent
-    /// directories.
+    pub fn upsert(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
+        if self.find(name).is_some() {
+            self.replace(name, data)
+        } else {
+            self.add(name, mode, data)
+        }
+    }
+
     pub fn link(&mut self, name: &str, target: &str) -> Result<()> {
         match self.entries.iter_mut().find(|e| e.name == name) {
             Some(e) if e.mode & S_IFMT == S_IFLNK => {
@@ -163,6 +180,72 @@ impl Ramdisk {
             Some(_) => bail!("{name} is in the ramdisk and is not a link"),
             None => self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec()),
         }
+    }
+
+    pub fn prune_stock_recovery_assets(&mut self) {
+        self.entries.retain(|e| {
+            !e.name.starts_with("res/images")
+                && e.name != "res"
+                && e.name != "system/lib64/librecovery_ui.so"
+                && e.name != "system/lib64/librecovery_ui_ext.so"
+                && e.name != "system/lib64/librecovery_updater.so"
+        });
+    }
+
+    pub fn transplant_skyward_from(&mut self, source: &Ramdisk) -> Result<()> {
+        self.prune_stock_recovery_assets();
+        let recovery_bin = source
+            .find(paths::RECOVERY)
+            .with_context(|| format!("{} is missing from the source Skyward ramdisk", paths::RECOVERY))?
+            .data
+            .clone();
+        self.upsert(paths::RECOVERY, 0o750, recovery_bin)?;
+        let (_, recovery_name) = paths::RECOVERY.rsplit_once('/').expect("recovery path has a folder");
+        for command in paths::COMMANDS {
+            self.link(command, recovery_name)?;
+        }
+        for (path, mode) in [
+            (paths::SYSTEM_INIT, 0o755),
+            (paths::CONFIG, 0o644),
+            (paths::FONT, 0o644),
+            (paths::MONO, 0o644),
+            (paths::MONO_LICENSE, 0o644),
+            (paths::TASK_PROFILES, 0o644),
+            (paths::MTP_RC, 0o644),
+        ] {
+            if let Some(entry) = source.find(path) {
+                self.upsert(path, mode, entry.data.clone())?;
+            }
+        }
+        if let Some(prop_entry) = self.find(paths::PROP_DEFAULT) {
+            let mut props = without_props(&prop_entry.data, &BUILD_VERSION);
+            if !props.ends_with(SKYWARD_PROPS) {
+                props.extend_from_slice(SKYWARD_PROPS);
+            }
+            self.replace(paths::PROP_DEFAULT, props)?;
+        }
+        Ok(())
+    }
+
+    pub fn skyward_digest(&self) -> Option<[u8; 32]> {
+        self.find(paths::CONFIG)?;
+        let mut hasher = Sha256::new();
+        for path in [
+            paths::RECOVERY,
+            paths::CONFIG,
+            paths::SYSTEM_INIT,
+            paths::FONT,
+            paths::MONO,
+            paths::MONO_LICENSE,
+            paths::MTP_RC,
+        ] {
+            if let Some(entry) = self.find(path) {
+                hasher.update(path.as_bytes());
+                hasher.update(&(entry.data.len() as u64).to_le_bytes());
+                hasher.update(&entry.data);
+            }
+        }
+        Some(hasher.finalize().into())
     }
 
     fn insert(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
@@ -187,6 +270,17 @@ impl Ramdisk {
     }
 }
 
+fn without_props(props: &[u8], names: &[&str]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(props.len());
+    for line in props.split_inclusive(|b| *b == b'\n') {
+        let key = line.split(|b| *b == b'=').next().unwrap_or_default();
+        if !names.iter().any(|n| n.as_bytes() == key) {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
 fn root_entry(name: &str, mode: u32, data: Vec<u8>) -> Entry {
     let nlink = if mode & S_IFMT == S_IFDIR { 2 } else { 1 };
     Entry { name: name.to_string(), mode, uid: 0, gid: 0, mtime: 0, nlink, dev: (0, 0), rdev: (0, 0), data }
@@ -196,7 +290,6 @@ fn c_path(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).context("a NUL in the path")
 }
 
-/// One entry of [`Ramdisk::unpack`] at `path`.
 fn unpack(e: &Entry, path: &Path) -> Result<()> {
     let kind = e.mode & S_IFMT;
     let mode = e.mode & 0o7777;
@@ -230,8 +323,6 @@ fn unpack(e: &Entry, path: &Path) -> Result<()> {
         _ => bail!("mode {:o} is no kind of file", e.mode),
     }
     std::os::unix::fs::lchown(path, Some(e.uid), Some(e.gid)).context("give it its owner")?;
-    // Taking an owner clears the set-ID bits, so the mode comes after; a
-    // link has none of its own.
     if kind != S_IFLNK {
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).context("give it its mode")?;
     }
@@ -241,8 +332,6 @@ fn unpack(e: &Entry, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Give `path` itself, a link or not, `mtime` as the time it was last
-/// changed and read.
 fn set_time(path: &Path, mtime: u32) -> Result<()> {
     let at = libc::timespec { tv_sec: mtime as libc::time_t, tv_nsec: 0 };
     let times = [at, at];
@@ -252,18 +341,9 @@ fn set_time(path: &Path, mtime: u32) -> Result<()> {
     Ok(())
 }
 
-/// The legacy LZ4 framing's magic number.
 const LZ4_LEGACY_MAGIC: u32 = 0x184C_2102;
-/// The most a block of the legacy framing unpacks to; the kernel unpacks no
-/// more of one.
 const LZ4_LEGACY_BLOCK: usize = 8 << 20;
 
-/// `input` compressed in LZ4's legacy framing, the one the kernel's initramfs
-/// unpacker reads: the magic number, then each 8 MiB of `input` as one LZ4
-/// block with its compressed length before it. The kernel reads the ramdisks
-/// the bootloader joins as one such stream, going on from one into the next
-/// only where that one starts with the magic number. Compressed in process,
-/// with no `lz4` tool, as the recovery does on the phone.
 pub fn lz4_legacy(input: &[u8]) -> Vec<u8> {
     let mut out = LZ4_LEGACY_MAGIC.to_le_bytes().to_vec();
     for chunk in input.chunks(LZ4_LEGACY_BLOCK) {
@@ -273,6 +353,12 @@ pub fn lz4_legacy(input: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&block);
     }
     out
+}
+
+pub fn gzip_encode(input: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(input).context("gzip compress")?;
+    encoder.finish().context("gzip finish")
 }
 
 fn lz4_tool(input: &[u8]) -> Result<Vec<u8>> {
@@ -321,7 +407,35 @@ mod tests {
         assert!(rd.add("system/bin/recovery", 0o644, Vec::new()).is_err());
     }
 
-    /// What the reference `lz4` tool unpacks `packed` to.
+    #[test]
+    fn gzip_round_trip_and_transplant_work() {
+        let mut stock = Ramdisk { entries: Vec::new() };
+        stock.add("init", 0o750, b"stock-init".to_vec()).unwrap();
+        stock.add("first_stage_ramdisk/fstab.qcom", 0o644, b"stock-fstab".to_vec()).unwrap();
+        stock.add("system/bin/recovery", 0o750, b"stock-recovery".to_vec()).unwrap();
+        stock.add("prop.default", 0o644, b"ro.build.version.release=15\nro.product.device=spacewar\n".to_vec()).unwrap();
+        let gz = stock.encode_gzip().unwrap();
+        assert!(gz.starts_with(GZIP_MAGIC));
+
+        let mut skyward = Ramdisk { entries: Vec::new() };
+        skyward.add("system/bin/recovery", 0o750, b"skyward-recovery".to_vec()).unwrap();
+        skyward.add("skyward/device.toml", 0o644, b"[device]\ncodename = \"spacewar\"\n".to_vec()).unwrap();
+        skyward.add("skyward/system-init", 0o755, b"sysinit".to_vec()).unwrap();
+
+        let mut decoded = Ramdisk::decode(&gz).unwrap();
+        assert!(decoded.skyward_digest().is_none());
+        decoded.transplant_skyward_from(&skyward).unwrap();
+        let reencoded = decoded.encode_in_process_matching(&gz).unwrap();
+        assert!(reencoded.starts_with(GZIP_MAGIC));
+
+        let final_rd = Ramdisk::decode(&reencoded).unwrap();
+        assert_eq!(final_rd.find("init").unwrap().data, b"stock-init");
+        assert_eq!(final_rd.find("first_stage_ramdisk/fstab.qcom").unwrap().data, b"stock-fstab");
+        assert_eq!(final_rd.find("system/bin/recovery").unwrap().data, b"skyward-recovery");
+        assert_eq!(final_rd.find("skyward/device.toml").unwrap().data, b"[device]\ncodename = \"spacewar\"\n");
+        assert!(final_rd.skyward_digest().is_some());
+    }
+
     fn unpacked_by_the_tool(packed: &[u8]) -> Vec<u8> {
         let mut child = Command::new("lz4").args(["-d", "-c"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let mut stdin = child.stdin.take().unwrap();
@@ -335,7 +449,6 @@ mod tests {
 
     #[test]
     fn a_legacy_stream_starts_with_its_magic_and_unpacks_whole() {
-        // Past one block of 8 MiB, compressible in places.
         let input: Vec<u8> = (0..20u32 << 20).map(|i| if i % 3 == 0 { (i / 7) as u8 } else { 0x5a }).collect();
         let packed = lz4_legacy(&input);
         assert_eq!(packed[..4], [0x02, 0x21, 0x4c, 0x18]);
@@ -371,7 +484,6 @@ mod tests {
         assert!(rd.link("system/bin/recovery/7za", "recovery").is_err(), "a file holds no links");
     }
 
-    /// An entry owned by whoever runs the tests, who can give it that owner.
     fn mine(name: &str, mode: u32, data: &[u8]) -> Entry {
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
         Entry { name: name.into(), mode, uid, gid, mtime: 1_500_000_000, nlink: 1, dev: (0, 0), rdev: (0, 0), data: data.to_vec() }
@@ -382,7 +494,6 @@ mod tests {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // As the archives before it left the root.
         fs::write(root.join("init"), b"old program").unwrap();
         fs::create_dir(root.join("skyward")).unwrap();
         fs::write(root.join("skyward/system.toml"), b"id = \"test\"").unwrap();
