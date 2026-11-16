@@ -10,6 +10,9 @@ const FOOTER_LEN: usize = 64;
 const HEADER_LEN: usize = 256;
 const TAG_HASH: u64 = 2;
 const RELEASE: &[u8] = b"skyward-pack";
+const DWC3_ATOMIC_PRE: [u8; 12] = [0x14, 0x41, 0x38, 0xd5, 0x00, 0x7d, 0x80, 0x52, 0x01, 0xfa, 0x80, 0x52];
+const DWC3_ATOMIC_POST: [u8; 12] = [0x69, 0xee, 0x43, 0xf9, 0x28, 0x31, 0x18, 0x91, 0x15, 0x01, 0x40, 0xb9];
+const AARCH64_NOP3: [u8; 12] = [0x1f, 0x20, 0x03, 0xd5, 0x1f, 0x20, 0x03, 0xd5, 0x1f, 0x20, 0x03, 0xd5];
 
 pub struct BootImage {
     pub header: HeaderV3,
@@ -53,11 +56,20 @@ impl BootImage {
         Ok(out)
     }
 
+    pub fn fix_kernel_quirks(&mut self) {
+        if let Some(pos) = self.kernel.windows(28).position(|w| {
+            w[..12] == DWC3_ATOMIC_PRE && (w[15] & 0xfc) == 0x94 && w[16..28] == DWC3_ATOMIC_POST
+        }) {
+            self.kernel[pos + 4..pos + 16].copy_from_slice(&AARCH64_NOP3);
+        }
+    }
+
     pub fn patch_skyward_from(target_bytes: &[u8], skyward_bytes: &[u8]) -> Result<Vec<u8>> {
         let mut target = BootImage::parse(target_bytes).context("parse target boot image")?;
         let source = BootImage::parse(skyward_bytes).context("parse source skyward image")?;
         let mut target_rd = Ramdisk::decode(&target.ramdisk).context("decode target ramdisk")?;
         let source_rd = Ramdisk::decode(&source.ramdisk).context("decode source skyward ramdisk")?;
+        target.fix_kernel_quirks();
         target_rd.transplant_skyward_from(&source_rd)?;
         target.ramdisk = target_rd.encode_in_process_matching(&target.ramdisk)?;
         let raw = target.to_bytes()?;

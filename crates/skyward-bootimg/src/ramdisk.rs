@@ -37,6 +37,18 @@ const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 const NEWC_MAGIC: &[u8] = b"070701";
 const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
 const SKYWARD_PROPS: &[u8] = b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n";
+const NOTHING_INIT_RECOVERY_ORIG: [u8; 24] = [
+    0xa0, 0x07, 0x00, 0x36, 0x40, 0x00, 0x80, 0x52, 0xe1, 0x03, 0x1f, 0xaa,
+    0x81, 0xe5, 0x01, 0x94, 0x20, 0x38, 0x00, 0x37, 0xa0, 0xc3, 0x00, 0xd1,
+];
+const NOTHING_INIT_RECOVERY_PATCH: [u8; 8] = [0x1f, 0x20, 0x03, 0xd5, 0x98, 0x01, 0x00, 0x14];
+const NOTHING_INIT_RET_TRUE: [u8; 4] = [0x33, 0x00, 0x80, 0x52];
+const NOTHING_INIT_SELINUX_ORIG: [u8; 12] = [
+    0x1f, 0x04, 0x00, 0x71, 0x00, 0x01, 0x00, 0x54, 0x20, 0x00, 0x80, 0x52,
+];
+const NOTHING_INIT_SELINUX_PATCH: [u8; 12] = [
+    0x1f, 0x00, 0x00, 0x71, 0x00, 0x01, 0x00, 0x54, 0x00, 0x00, 0x80, 0x52,
+];
 
 impl Entry {
     pub fn is_dir(&self) -> bool {
@@ -192,8 +204,24 @@ impl Ramdisk {
         });
     }
 
+    pub fn fix_nothing_init_recovery(&mut self) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.name == "system/bin/init" && (e.mode & S_IFMT == S_IFREG)) {
+            let buf = &mut entry.data;
+            if let Some(pos) = buf.windows(NOTHING_INIT_RECOVERY_ORIG.len()).position(|w| w == NOTHING_INIT_RECOVERY_ORIG) {
+                let target = pos + 0x674;
+                if buf.get(target..target + 4) == Some(&NOTHING_INIT_RET_TRUE) {
+                    buf[pos + 16..pos + 24].copy_from_slice(&NOTHING_INIT_RECOVERY_PATCH);
+                }
+            }
+            if let Some(pos) = buf.windows(NOTHING_INIT_SELINUX_ORIG.len()).position(|w| w == NOTHING_INIT_SELINUX_ORIG) {
+                buf[pos..pos + NOTHING_INIT_SELINUX_PATCH.len()].copy_from_slice(&NOTHING_INIT_SELINUX_PATCH);
+            }
+        }
+    }
+
     pub fn transplant_skyward_from(&mut self, source: &Ramdisk) -> Result<()> {
         self.prune_stock_recovery_assets();
+        self.fix_nothing_init_recovery();
         let recovery_bin = source
             .find(paths::RECOVERY)
             .with_context(|| format!("{} is missing from the source Skyward ramdisk", paths::RECOVERY))?
@@ -214,7 +242,11 @@ impl Ramdisk {
             (paths::MTP_RC, 0o644),
         ] {
             if let Some(entry) = source.find(path) {
-                self.upsert(path, mode, entry.data.clone())?;
+                let mut data = entry.data.clone();
+                if path == paths::MTP_RC || path == paths::TASK_PROFILES || path == paths::CONFIG {
+                    data.retain(|&b| b != b'\r');
+                }
+                self.upsert(path, mode, data)?;
             }
         }
         if let Some(prop_entry) = self.find(paths::PROP_DEFAULT) {
@@ -238,6 +270,7 @@ impl Ramdisk {
             paths::MONO,
             paths::MONO_LICENSE,
             paths::MTP_RC,
+            "system/bin/init",
         ] {
             if let Some(entry) = self.find(path) {
                 hasher.update(path.as_bytes());

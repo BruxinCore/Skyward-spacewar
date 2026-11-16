@@ -1,9 +1,3 @@
-//! The phone's own programs that use the keys its secure world keeps.
-//! Which they are and how each is started is read from the installed
-//! system's own partitions, as its init and its service directories read
-//! them, so no phone is told of them by hand, and a system that names them
-//! otherwise after an update is followed as it is.
-
 use anyhow::{Context, Result};
 use skyward_config::Service;
 use skyward_programs::naming::{self, Does};
@@ -11,28 +5,11 @@ use skyward_programs::phone::{self, Partition, Phone, PARTITIONS};
 use skyward_programs::secure::{self, Step};
 use std::path::Path;
 
-/// What the partitions of an installed system say that the recovery acts
-/// on.
 pub struct Found {
-    /// Every service of the newer kind the phone describes: what its own
-    /// service directory takes from the programs that register them, and
-    /// what the recovery's is told of, so that each of the phone's
-    /// programs registers there all it registers on the phone.
     pub described: Vec<String>,
-    /// What to do to use the phone's keys, in order, or why the partitions
-    /// do not say.
     pub steps: Result<Vec<Step>>,
 }
 
-/// What the partitions of the slot's installed system say. Which build of
-/// the hardware a partition describes the phone's init may name itself as
-/// the phone starts; where it does and the build has no name yet, the
-/// recovery names it first, as the phone's scripts have init name it, and
-/// reads the partitions as the phone so named.
-///
-/// `libraries` is where the libraries the phone's partitions were built
-/// against are opened, on a phone that carries them as a bundle of their
-/// own: each of its programs is given the folder among its own.
 pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Found> {
     let mut phone = read(slot, libraries)?;
     let unnamed = naming::steps(&phone)?;
@@ -43,28 +20,31 @@ pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Found>
     Ok(Found { described: phone.told_of(), steps: secure::steps(&phone) })
 }
 
-/// The phone as the partitions of the slot's installed system describe it,
-/// read with the properties its init has as it reads them: the
-/// bootloader's, with those the recovery has set beside them as the
-/// phone's init sets them, and the installed build's. `libraries` is as
-/// [`found`] takes it.
 fn read(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Phone> {
     let properties = skyward_info::installed_props(slot)?;
     let mounted = skyward_vab::mounted_partitions(slot)?;
     let mut partitions = Vec::new();
     for name in PARTITIONS {
         let named = format!("{name}{}", slot.suffix());
-        let partition = mounted.iter().find(|m| m.partition == named).with_context(|| format!("{named} is not mounted"))?;
-        partitions.push(Partition::mounted(name, &partition.mount_point));
+        let mount_point = match mounted.iter().find(|m| m.partition == named) {
+            Some(partition) => partition.mount_point.clone(),
+            None => {
+                let merged = [Path::new("/mnt/system/system").join(name), Path::new("/mnt/system").join(name)]
+                    .into_iter()
+                    .find(|p| p.is_dir())
+                    .with_context(|| format!("{named} is not mounted"))?;
+                let link = Path::new("/mnt").join(name);
+                if !link.exists() {
+                    let _ = std::os::unix::fs::symlink(&merged, &link);
+                }
+                merged
+            }
+        };
+        partitions.push(Partition::mounted(name, mount_point));
     }
     Phone::read(partitions, properties, libraries)
 }
 
-/// Do what the phone's init does to name the builds its partitions
-/// describe: run each program to its end, and set each property to its
-/// value as the properties stand by then, the programs having set theirs.
-/// Init goes on however a program ends, and a property whose value names
-/// one nobody has set stays unset, as init leaves it.
 fn name(does: &[Does]) -> Result<()> {
     for one in does {
         match one {
@@ -84,21 +64,14 @@ fn name(does: &[Does]) -> Result<()> {
     Ok(())
 }
 
-/// The programs among `steps`, as the recovery keeps them running.
 pub fn programs(steps: &[Step]) -> Vec<Service> {
     secure::programs(steps).into_iter().map(|started| started.service.clone()).collect()
 }
 
-/// Whether the recovery serves the secure element service among `steps`.
 pub fn serves_elements(steps: &[Step]) -> bool {
     steps.contains(&Step::ServeElements)
 }
 
-/// Do `steps` in order: start each program and wait until it is ready,
-/// and serve the secure element service where it stands among them, which
-/// is after the secure elements' own services have registered and before
-/// the weaver that reaches its secure element through it starts. Each
-/// program names every folder its libraries are looked for in.
 pub fn start(steps: &[Step]) -> Result<()> {
     for step in steps {
         match step {
@@ -112,7 +85,6 @@ pub fn start(steps: &[Step]) -> Result<()> {
     Ok(())
 }
 
-/// What `steps` are, a line each, as the `keys` command prints them.
 pub fn describe(steps: &[Step]) -> Vec<String> {
     let mut lines = Vec::new();
     for step in steps {

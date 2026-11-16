@@ -94,6 +94,7 @@ fn main() -> Result<()> {
                 anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
             }
             rd.prune_stock_recovery_assets();
+            rd.fix_nothing_init_recovery();
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
@@ -102,14 +103,20 @@ fn main() -> Result<()> {
                 rd.link(command, recovery)?;
             }
             rd.upsert(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
-            rd.upsert(paths::CONFIG, 0o644, read(&config)?)?;
+            let mut config_bytes = read(&config)?;
+            config_bytes.retain(|&b| b != b'\r');
+            rd.upsert(paths::CONFIG, 0o644, config_bytes)?;
             rd.upsert(paths::FONT, 0o644, read(&font)?)?;
             rd.upsert(paths::MONO, 0o644, read(&mono)?)?;
             rd.upsert(paths::MONO_LICENSE, 0o644, read(&mono_license)?)?;
             if rd.find(paths::TASK_PROFILES).is_none() {
-                rd.add(paths::TASK_PROFILES, 0o644, TASK_PROFILES.to_vec())?;
+                let mut profiles = TASK_PROFILES.to_vec();
+                profiles.retain(|&b| b != b'\r');
+                rd.add(paths::TASK_PROFILES, 0o644, profiles)?;
             }
-            rd.upsert(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
+            let mut mtp_rc = MTP_RC.to_vec();
+            mtp_rc.retain(|&b| b != b'\r');
+            rd.upsert(paths::MTP_RC, 0o644, mtp_rc)?;
             let stock_props = &rd
                 .find(paths::PROP_DEFAULT)
                 .with_context(|| format!("{} is not in the ramdisk", paths::PROP_DEFAULT))?

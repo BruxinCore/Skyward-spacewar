@@ -92,7 +92,8 @@ impl Backlight {
                 .parse()
                 .with_context(|| format!("parse {name}"))
         };
-        let top = normal_max(read("max_brightness")?)?;
+        let max = read("max_brightness")?;
+        let top = normal_max(max).unwrap_or(max);
         let level = read("brightness")?;
         Ok(Backlight { path: dir.join("brightness"), top, level })
     }
@@ -1008,6 +1009,9 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        if kept.settings().is_none() {
+            app.state.brightness = 0.55;
+        }
         let keeper = Keeper::new(&kept);
         skyward_sys::kmsg(&format!(
             "the pages speak {:?}, {}, and the locale named is {}",
@@ -1215,6 +1219,7 @@ impl<'a> Pages<'a> {
             && !self.sideloading
             && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)
         {
+            let _ = skyward_sys::usb::set("adb", USB_TIMEOUT);
             skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
             self.app.report(&format!("{e:#}"), monotonic_ms());
         }

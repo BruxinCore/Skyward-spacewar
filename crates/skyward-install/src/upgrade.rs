@@ -67,6 +67,14 @@ pub fn write(dir: &Path, image: &[u8], slots: &[Slot], progress: &mut dyn FnMut(
             .with_context(|| format!("patch Skyward into {}", dev.display()))?;
         let len = patched.len() as u64;
         let step = idx as u64;
+        #[cfg(target_os = "android")]
+        {
+            use std::os::fd::AsRawFd;
+            let zero: libc::c_int = 0;
+            unsafe {
+                let _ = libc::ioctl(file.as_raw_fd(), 0x125d, &zero);
+            }
+        }
         image::flash(&mut Cursor::new(&patched), len, std::slice::from_ref(&dev), &mut |done, total| {
             progress(step * total + done, count * total);
         })?;

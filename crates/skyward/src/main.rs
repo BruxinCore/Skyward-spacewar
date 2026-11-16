@@ -232,12 +232,10 @@ fn main() -> Result<()> {
         Cmd::Umount => skyward_vab::unmount_partitions(booted_slot()?),
         #[cfg(target_os = "android")]
         Cmd::Services { config } => {
+            let cfg = DeviceConfig::load(&config)?;
             let slot = booted_slot()?;
-            let props = skyward_info::installed_props(slot)?;
-            let services: Vec<Started> = DeviceConfig::load(&config)?.services.into_iter().filter(|s| s.runs_on(&props)).map(Started::from).collect();
-            let libraries = secure::libraries()?;
-            services::start(&services, libraries.as_deref())?;
-            keys::start(&keys::found(slot, libraries.as_deref())?.steps?)?;
+            let found = secure::libraries().and_then(|libraries| keys::found(slot, libraries.as_deref()));
+            bring_up(&cfg, slot, found)?;
             loop {
                 std::thread::park();
             }
@@ -291,8 +289,8 @@ fn main() -> Result<()> {
         }
         #[cfg(target_os = "android")]
         Cmd::Keymint { key, alias } => {
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::keymint::KeyMint::open(&binder, &hardware)?;
             let hw = service.hardware()?;
             println!("keymint {} version {} at security level {} by {}", hw.name, hw.version, hw.security_level, hw.author);
             if let Some(alias) = alias {
@@ -347,8 +345,8 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::keymint::KeyMint::open(&binder, &hardware)?;
             let opening = data::open_without_credential(&service)?;
             match &opening.mounted {
                 Some(mounted) => {
@@ -488,7 +486,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     registering.extend(cfg.wlan.iter().map(|w| w.service.clone()));
     let mut told = registering.clone();
     told.extend(described.into_iter().filter(|name| !registering.contains(name)));
-    if !told.is_empty() {
+    if !told.is_empty() && Path::new("/system/bin/servicemanager").exists() {
         secure::publish_descriptions(&told)?;
         skyward_sys::kmsg(&format!("the service directory is told of {} of the phone's own services", told.len()))?;
     }
@@ -502,7 +500,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
         skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;
     }
     keys::start(&steps)?;
-    agree_on_the_notes_key(&registering)
+    agree_on_the_notes_key(&registering, &hardware)
 }
 
 #[cfg(target_os = "android")]
@@ -550,15 +548,21 @@ fn start_logd(logd: &skyward_config::Logd) -> Result<()> {
 }
 
 #[cfg(target_os = "android")]
-fn agree_on_the_notes_key(registered: &[String]) -> Result<()> {
+fn agree_on_the_notes_key(registered: &[String], hardware: &[String]) -> Result<()> {
     let interface = format!("{}/", skyward_crypto::sharedsecret::INTERFACE);
     let names: Vec<String> = registered.iter().filter(|n| n.starts_with(&interface)).cloned().collect();
-    if names.is_empty() {
-        return Ok(());
+    if !names.is_empty() {
+        let binder = skyward_binder::driver::Binder::open()?;
+        let agreed = skyward_crypto::sharedsecret::agree(&binder, &names)?;
+        return skyward_sys::kmsg(&format!("{agreed} of the secure world agreed on the key it signs its notes with"));
     }
-    let binder = skyward_binder::driver::Binder::open()?;
-    let agreed = skyward_crypto::sharedsecret::agree(&binder, &names)?;
-    skyward_sys::kmsg(&format!("{agreed} of the secure world agreed on the key it signs its notes with"))
+    let older: Vec<String> = hardware.iter().filter(|n| n.starts_with("android.hardware.keymaster@")).cloned().collect();
+    if !older.is_empty() {
+        let hw = skyward_binder::driver::Binder::hardware()?;
+        let agreed = skyward_crypto::sharedsecret::agree_hardware(&hw, &older)?;
+        return skyward_sys::kmsg(&format!("{agreed} of the secure world agreed on the key it signs its notes with"));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
@@ -670,6 +674,7 @@ fn recovery() -> Result<()> {
         }
     };
     run().inspect_err(|e| {
+        let _ = bcb::clear(&bcb::misc());
         let _ = skyward_sys::kmsg(&format!("recovery failed: {e:#}"));
     })
 }

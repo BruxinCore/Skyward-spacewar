@@ -15,13 +15,17 @@ corner_radius = 102
 
 [modules]
 sources = ["vendor_boot", "vendor"]
-load = []
+load = ["fts_tp"]
 
 [firmware]
 partition = "modem"
 
 [partitions]
 mounted = ["persist"]
+
+[haptics]
+resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+strength = { lightest = 0.25, strongest = 0.75 }
 
 [wipe]
 logs = [
