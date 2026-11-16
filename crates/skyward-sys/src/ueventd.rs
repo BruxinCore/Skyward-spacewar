@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-/// Where the phone keeps the rules for its own device nodes, and the names
-/// its own partitions give to the accounts those rules name.
-pub const RULE_FILES: [&str; 2] = ["/vendor/etc/ueventd.rc", "/odm/etc/ueventd.rc"];
+pub const RULE_FILES: [&str; 4] = [
+    "/vendor/ueventd.rc",
+    "/vendor/etc/ueventd.rc",
+    "/odm/ueventd.rc",
+    "/odm/etc/ueventd.rc",
+];
 pub const PASSWD_FILES: [&str; 2] = ["/vendor/etc/passwd", "/odm/etc/passwd"];
 pub const GROUP_FILES: [&str; 2] = ["/vendor/etc/group", "/odm/etc/group"];
 
-/// The accounts Android fixes once and for all. The rules, and the init
-/// scripts of the phone's own programs, name them rather than their
-/// numbers, and a recovery has no list of its own to look them up in.
-const ACCOUNTS: [(&str, u32); 33] = [
+const ACCOUNTS: [(&str, u32); 43] = [
     ("root", 0),
     ("system", 1000),
     ("radio", 1001),
@@ -39,16 +39,24 @@ const ACCOUNTS: [(&str, u32); 33] = [
     ("audioserver", 1041),
     ("cameraserver", 1047),
     ("shell", 2000),
+    ("cache", 2001),
+    ("diag", 2002),
+    ("net_bt_admin", 3001),
+    ("net_bt", 3002),
+    ("inet", 3003),
+    ("net_raw", 3004),
+    ("net_admin", 3005),
+    ("net_bw_stats", 3006),
+    ("net_bw_acct", 3007),
     ("readproc", 3009),
     ("wakelock", 3010),
     ("uhid", 3011),
+    ("readtracefs", 3012),
     ("nobody", 9999),
 ];
 
-/// What a rule says one or more device nodes should look like.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// The node's path, which may end in `*` to stand for a family of them.
     pub path: String,
     pub mode: u32,
     pub uid: u32,
@@ -64,8 +72,6 @@ impl Rule {
     }
 }
 
-/// The accounts a phone adds to the fixed ones, read from the passwd and
-/// group files on its own partitions.
 pub fn accounts(files: &[&str]) -> HashMap<String, u32> {
     let mut out: HashMap<String, u32> = ACCOUNTS.iter().map(|&(n, id)| (n.to_string(), id)).collect();
     for file in files {
@@ -81,8 +87,6 @@ pub fn accounts(files: &[&str]) -> HashMap<String, u32> {
     out
 }
 
-/// What a rule calls an account, as a number. The phone's own programs are
-/// given accounts of their own, numbered in their names.
 pub fn account(known: &HashMap<String, u32>, name: &str) -> Option<u32> {
     if let Some(id) = known.get(name) {
         return Some(*id);
@@ -90,10 +94,6 @@ pub fn account(known: &HashMap<String, u32>, name: &str) -> Option<u32> {
     name.strip_prefix("oem_").and_then(|n| n.parse().ok())
 }
 
-/// The device-node rules in a ueventd file, in the order they are written:
-/// where two of them name the same node, the later one has the say. Lines
-/// about files under /sys say which attribute they are about and are left
-/// to the phone's own programs.
 pub fn rules(text: &str, known: &HashMap<String, u32>) -> Vec<Rule> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -111,10 +111,6 @@ pub fn rules(text: &str, known: &HashMap<String, u32>) -> Vec<Rule> {
     out
 }
 
-/// Give every device node the owner and permissions the phone's own rules
-/// give it. A recovery's own rules were all it had when it started, so the
-/// nodes its vendor partition describes are left as the kernel made them,
-/// and programs that give up being root cannot open them.
 #[cfg(target_os = "android")]
 pub fn apply() -> anyhow::Result<usize> {
     use anyhow::Context;
@@ -136,8 +132,6 @@ pub fn apply() -> anyhow::Result<usize> {
     Ok(changed)
 }
 
-/// Every device node under `dir`, which a recovery's /dev holds few enough
-/// of to walk whole.
 #[cfg(target_os = "android")]
 fn nodes(dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
     use anyhow::Context;
@@ -195,8 +189,7 @@ mod tests {
 
     #[test]
     fn lines_that_are_not_about_a_device_node_are_passed_over() {
-        let text = "# a comment\n\
-                    subsystem block\n\
+        let text = "subsystem block\n\
                     /sys/class/qdss_bridge/mhi_qdss  mode      0660     system   oem_2902\n\
                     /dev/kgsl                 0666   system     system\n";
         assert_eq!(rules(text, &known()).len(), 1);

@@ -1,40 +1,14 @@
-//! The older layout, which the phone's hardware services still speak. A
-//! call in it carries plain numbers the way the newer one does, but hands
-//! anything longer over as an address: the driver copies what the address
-//! points at into the far side's own room and rewrites the address to
-//! match. Where the newer layout writes a length and then the bytes, this
-//! one writes a frame saying where the bytes are, and then an address for
-//! the bytes themselves pointing back at that frame.
-
 use crate::parcel::Payload;
 use anyhow::{bail, Context, Result};
 
-/// An address a call hands over, as the driver carries it.
 const ADDRESS: u32 = u32::from_be_bytes([b'p', b't', b'*', 0x85]);
-
-/// An object in the sending process, as the driver carries it.
 const OBJECT: u32 = u32::from_be_bytes([b's', b'h', b'*', 0x85]);
-
-/// The bytes this address points at sit inside what another address of the
-/// same call points at.
 const INSIDE_ANOTHER: u32 = 1;
-
-/// How much room an address takes among the values.
 const ADDRESS_BYTES: usize = 40;
-
-/// How much room an object takes among the values. The newer layout adds a
-/// word saying how far the object's interface travels; this one does not.
 const OBJECT_BYTES: usize = 24;
-
-/// A frame as the phone's own libraries hold one in memory: where the bytes
-/// are, how many there are, and whether whoever holds it frees them.
 const FRAME_BYTES: usize = 16;
-
-/// What the driver copies for an address is rounded up to a whole word.
 const WORD: u64 = 8;
 
-/// A call being written. What the addresses point at is kept here too, so
-/// it stays where it is until the driver has read it.
 #[derive(Default)]
 pub struct Message {
     data: Vec<u8>,
@@ -44,8 +18,6 @@ pub struct Message {
 }
 
 impl Message {
-    /// A call to `interface`, opened with the name the far side checks
-    /// before it looks at anything the method itself takes.
     pub fn call(interface: &str) -> Message {
         let mut m = Message::default();
         m.data.extend_from_slice(interface.as_bytes());
@@ -56,6 +28,10 @@ impl Message {
         m
     }
 
+    pub fn i32(&mut self, v: i32) {
+        self.u32(v as u32);
+    }
+
     pub fn u32(&mut self, v: u32) {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
@@ -64,15 +40,11 @@ impl Message {
         self.data.extend_from_slice(&v.to_le_bytes());
     }
 
-    /// A run of bytes: the frame that says where they are, then an address
-    /// for the bytes themselves.
     pub fn bytes(&mut self, value: &[u8]) {
         let at = self.keep(value.to_vec());
         self.framed(at, value.len(), value.len());
     }
 
-    /// Text, which is a run of bytes with a terminator the count leaves
-    /// out.
     pub fn text(&mut self, value: &str) {
         let mut raw = value.as_bytes().to_vec();
         raw.push(0);
@@ -80,40 +52,38 @@ impl Message {
         self.framed(at, value.len(), value.len() + 1);
     }
 
-    /// Hold on to bytes the driver will read, and say where they are.
-    fn keep(&mut self, bytes: Vec<u8>) -> u64 {
+    pub fn keep(&mut self, bytes: Vec<u8>) -> u64 {
         let bytes = bytes.into_boxed_slice();
         let at = bytes.as_ptr() as u64;
         self.held.push(bytes);
         at
     }
 
-    /// The pair of addresses a run of bytes is written as: the frame, and
-    /// then the bytes it points at.
-    fn framed(&mut self, at: u64, count: usize, length: usize) {
+    pub fn framed_vec(&mut self, elements: Vec<u8>, count: usize) -> usize {
+        let len = elements.len();
+        let at = self.keep(elements);
+        self.framed(at, count, len)
+    }
+
+    fn framed(&mut self, at: u64, count: usize, length: usize) -> usize {
         let mut frame = Vec::with_capacity(FRAME_BYTES);
         frame.extend_from_slice(&at.to_le_bytes());
         frame.extend_from_slice(&(count as u32).to_le_bytes());
-        // Whoever reads the frame does not free what it points at.
         frame.extend_from_slice(&[0; 4]);
         let frame_at = self.keep(frame);
-        let parent = self.address(frame_at, FRAME_BYTES, None);
-        self.address(at, length, Some(parent));
+        let parent = self.address_at(frame_at, FRAME_BYTES, None);
+        self.address_at(at, length, Some((parent, 0)))
     }
 
-    /// Write an address among the values and say where it sits, which is
-    /// how the driver finds it. The answer is which address this is, for
-    /// the one pointing inside it to name.
-    fn address(&mut self, at: u64, length: usize, inside: Option<usize>) -> usize {
+    pub fn address_at(&mut self, at: u64, length: usize, inside: Option<(usize, usize)>) -> usize {
         let which = self.addresses.len();
         self.addresses.push(self.data.len() as u64);
         self.data.extend_from_slice(&ADDRESS.to_le_bytes());
         self.data.extend_from_slice(&inside.map_or(0, |_| INSIDE_ANOTHER).to_le_bytes());
         self.data.extend_from_slice(&at.to_le_bytes());
         self.data.extend_from_slice(&(length as u64).to_le_bytes());
-        self.data.extend_from_slice(&(inside.unwrap_or(0) as u64).to_le_bytes());
-        // The address inside the frame is the frame's first field.
-        self.data.extend_from_slice(&0u64.to_le_bytes());
+        self.data.extend_from_slice(&(inside.map_or(0, |(p, _)| p) as u64).to_le_bytes());
+        self.data.extend_from_slice(&(inside.map_or(0, |(_, o)| o) as u64).to_le_bytes());
         self.pointed += (length as u64).next_multiple_of(WORD);
         which
     }
@@ -133,7 +103,6 @@ impl Payload for Message {
     }
 }
 
-/// Reads back what a hardware service answered.
 pub struct Answer<'a> {
     data: &'a [u8],
     at: usize,
@@ -144,8 +113,6 @@ impl<'a> Answer<'a> {
         Answer { data, at: 0 }
     }
 
-    /// Whether the call went through. A service that refused says so first,
-    /// and says why in the text that follows.
     pub fn status(&mut self) -> Result<()> {
         let code = self.i32().context("read whether the service took the call")?;
         if code == 0 {
@@ -161,14 +128,18 @@ impl<'a> Answer<'a> {
         Ok(i32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
     }
 
-    /// A truth value: a byte, padded to four as everything is.
+    pub fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
+    }
+
+    pub fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+    }
+
     pub fn bool(&mut self) -> Result<bool> {
         Ok(self.take(4)?[0] != 0)
     }
 
-    /// The bytes an address in the reply points at. The driver has already
-    /// moved them into this program's own room and rewritten the address,
-    /// so they are read where they lie.
     pub fn pointed(&mut self) -> Result<&'a [u8]> {
         let raw = self.take(ADDRESS_BYTES)?;
         let kind = u32::from_le_bytes(raw[0..4].try_into().expect("four bytes"));
@@ -183,7 +154,38 @@ impl<'a> Answer<'a> {
         Ok(unsafe { std::slice::from_raw_parts(at as *const u8, length as usize) })
     }
 
-    /// Text the far side wrote as its own value rather than as a frame.
+    pub fn pointed_slice(&mut self) -> Result<&'a [u8]> {
+        let raw = self.take(ADDRESS_BYTES)?;
+        let kind = u32::from_le_bytes(raw[0..4].try_into().expect("four bytes"));
+        if kind != ADDRESS {
+            bail!("the reply holds {kind:#x} where an address was expected");
+        }
+        let at = u64::from_le_bytes(raw[8..16].try_into().expect("eight bytes"));
+        let length = u64::from_le_bytes(raw[16..24].try_into().expect("eight bytes"));
+        if length == 0 {
+            return Ok(&[]);
+        }
+        if at == 0 {
+            bail!("the service left out something the call asked for");
+        }
+        Ok(unsafe { std::slice::from_raw_parts(at as *const u8, length as usize) })
+    }
+
+    pub fn vec_bytes(&mut self) -> Result<&'a [u8]> {
+        let frame = self.pointed()?;
+        if frame.len() < FRAME_BYTES {
+            bail!("the service answered a frame of {} bytes", frame.len());
+        }
+        let count = u32::from_le_bytes(frame[8..12].try_into().expect("four bytes")) as usize;
+        let bytes = self.pointed_slice()?;
+        Ok(&bytes[..count.min(bytes.len())])
+    }
+
+    pub fn vec_string(&mut self) -> Result<String> {
+        let bytes = self.vec_bytes()?;
+        Ok(String::from_utf8_lossy(bytes.strip_suffix(&[0]).unwrap_or(bytes)).into_owned())
+    }
+
     fn text(&mut self) -> Result<String> {
         let units = self.i32()?;
         if units < 0 {
@@ -197,7 +199,6 @@ impl<'a> Answer<'a> {
         Ok(String::from_utf16_lossy(&utf16))
     }
 
-    /// The handle of an object in the answering process.
     pub fn object(&mut self) -> Result<Option<u32>> {
         let raw = self.take(OBJECT_BYTES)?;
         let kind = u32::from_le_bytes(raw[0..4].try_into().expect("four bytes"));
@@ -216,14 +217,9 @@ impl<'a> Answer<'a> {
     }
 }
 
-/// The hardware service serving `interface` as `instance`, or `None` while
-/// nothing has registered it.
 #[cfg(target_os = "android")]
 pub fn find<'a>(binder: &'a crate::driver::Binder, interface: &str, instance: &str) -> Result<Option<crate::driver::Handle<'a>>> {
     use crate::driver::Handle;
-    // The directory the phone's hardware services register with, which is
-    // a second one beside the directory the rest of the phone uses, and
-    // the call that asks it for a service.
     const DIRECTORY: &str = "android.hidl.manager@1.0::IServiceManager";
     const GET: u32 = 1;
     let directory = binder.directory()?;
@@ -239,12 +235,8 @@ pub fn find<'a>(binder: &'a crate::driver::Binder, interface: &str, instance: &s
     }
 }
 
-/// The name a hardware service gives for the interface it was reached by,
-/// which is what a call that changes nothing answers.
 #[cfg(target_os = "android")]
 pub fn describes(service: &crate::driver::Handle) -> Result<String> {
-    // Every hardware service serves this interface besides its own, and a
-    // call on it is named as being on it whatever else the service serves.
     const BASE: &str = "android.hidl.base@1.0::IBase";
     const DESCRIBE: u32 = 256_136_003;
     let reply = service.transact(DESCRIBE, &Message::call(BASE)).context("ask the service what it serves")?;
@@ -262,8 +254,6 @@ pub fn describes(service: &crate::driver::Handle) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// Reads the parts of a written call back out of its own memory, the
-    /// way the driver does: the values, and each address among them.
     fn written(m: &Message) -> Vec<(u32, u64, Vec<u8>)> {
         m.addresses
             .iter()

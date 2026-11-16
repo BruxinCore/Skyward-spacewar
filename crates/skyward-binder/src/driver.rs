@@ -13,59 +13,60 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 
-/// The driver every program on the phone reaches its neighbours through.
 const DEVICE: &str = "/dev/binder";
-
-/// The second driver, which the phone's hardware services talk over. Older
-/// phones have the node itself; newer ones have the driver's own filesystem
-/// and the node inside it.
 const HARDWARE: [&str; 2] = ["/dev/hwbinder", "/dev/binderfs/hwbinder"];
-
-/// The layout this crate speaks. The driver refuses a program that knows a
-/// different one.
 const PROTOCOL: i32 = 8;
-
-/// Room the driver fills with what arrives for us, the size libbinder asks
-/// for: a megabyte less the two pages the driver keeps for itself.
 const MAP_BYTES: usize = 1024 * 1024 - 8192;
-
-/// The caller waits for no reply.
 const TF_ONE_WAY: u32 = 0x01;
-/// The call takes no file descriptors but is willing to receive them.
 const TF_ACCEPT_FDS: u32 = 0x10;
-/// The reply carries a bare error number in place of a payload.
 const TF_STATUS_CODE: u32 = 0x08;
-
-/// The error number libbinder answers a call with that reached no method:
-/// the object has none numbered so, or is not there.
 const UNKNOWN_TRANSACTION: i32 = -74;
-
-/// The most the driver says in one go that is read at a time; what does
-/// not fit comes the next time.
 const SAID_BYTES: usize = 256;
 
 fn bytes_of<T>(v: &T) -> &[u8] {
-    // Every field is a plain integer, so the struct is its own bytes.
     unsafe { std::slice::from_raw_parts((v as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
-/// This program's end of the driver.
+pub fn ensure_binderfs() {
+    use std::os::unix::fs::PermissionsExt;
+    if Path::new(DEVICE).exists() && Path::new(HARDWARE[0]).exists() {
+        return;
+    }
+    let dir = Path::new("/dev/binderfs");
+    if !dir.join("binder").exists() {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+        let src = c"binder";
+        let target = c"/dev/binderfs";
+        let fstype = c"binder";
+        unsafe {
+            libc::mount(src.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null());
+        }
+    }
+    for name in ["binder", "hwbinder", "vndbinder", "binder-control"] {
+        let node = dir.join(name);
+        if node.exists() {
+            let _ = std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o666));
+        }
+    }
+    for name in ["binder", "hwbinder", "vndbinder"] {
+        let link = Path::new("/dev").join(name);
+        let node = dir.join(name);
+        if !link.exists() && node.exists() {
+            let _ = std::os::unix::fs::symlink(&node, &link);
+        }
+    }
+}
+
 pub struct Binder {
     file: File,
     map: *mut libc::c_void,
-    /// The objects this end serves to other programs, where it serves any.
     served: Option<Arc<Objects<Binder>>>,
 }
 
-// The driver keeps what each thread is in the middle of by the thread that
-// asks, so any thread may ask at any time, and the mapped room is only
-// ever read here: one end is shared by the threads that take its calls.
 unsafe impl Send for Binder {}
 unsafe impl Sync for Binder {}
 
-/// What is waiting to be told the driver the next time it is asked
-/// anything, and the replies those words point at, which have to stay
-/// where they are until then.
 #[derive(Default)]
 struct Waiting {
     words: Vec<u8>,
@@ -81,12 +82,12 @@ impl Waiting {
 
 impl Binder {
     pub fn open() -> Result<Binder> {
+        ensure_binderfs();
         Binder::on(Path::new(DEVICE), None)
     }
 
-    /// The driver the phone's hardware services talk over, which is a
-    /// second one of the same kind.
     pub fn hardware() -> Result<Binder> {
+        ensure_binderfs();
         let node = HARDWARE
             .iter()
             .map(Path::new)
@@ -95,11 +96,8 @@ impl Binder {
         Binder::on(node, None)
     }
 
-    /// An end of the driver that serves `objects` to other programs: an
-    /// object written into a call or a reply made through it is one of
-    /// these, by its number, and the calls made on them come to the
-    /// threads that [`Binder::serve`] it.
     pub fn serving(objects: Arc<Objects<Binder>>) -> Result<Binder> {
+        ensure_binderfs();
         Binder::on(Path::new(DEVICE), Some(objects))
     }
 
@@ -110,8 +108,6 @@ impl Binder {
         if version != PROTOCOL {
             bail!("the driver speaks protocol {version}, Skyward speaks {PROTOCOL}");
         }
-        // The threads that take calls say so themselves, as many as the
-        // program starts, so the driver never has to ask for another.
         let mut threads: u32 = 0;
         unsafe { call(&file, BINDER_SET_MAX_THREADS, &mut threads as *mut u32 as *mut libc::c_void) }.context("keep the driver from asking for threads")?;
         let map = unsafe {
@@ -123,17 +119,10 @@ impl Binder {
         Ok(Binder { file, map, served })
     }
 
-    /// The service directory, which every program reaches at handle 0. The
-    /// driver carries a call to whichever process holds that place without
-    /// being given a share of it first, so this takes none and gives none
-    /// back: taking one and giving it back on every look-up would have the
-    /// directory's own object counted up and down from outside while it is
-    /// still starting.
     pub fn directory(&self) -> Result<Handle<'_>> {
         Ok(Handle { binder: self, handle: 0, held: false })
     }
 
-    /// Call method `code` on `handle` and wait for what it answers.
     pub fn transact(&self, handle: u32, code: u32, data: &impl Payload) -> Result<Reply<'_>> {
         let payload = data.values();
         let addresses = data.addresses();
@@ -147,8 +136,6 @@ impl Binder {
             offsets: addresses.as_ptr() as u64,
             ..TransactionData::default()
         };
-        // A call that hands over addresses is sent the way that tells the
-        // driver how much room to set aside for what they point at.
         let mut write = match addresses.is_empty() {
             true => BC_TRANSACTION.to_ne_bytes().to_vec(),
             false => BC_TRANSACTION_SG.to_ne_bytes().to_vec(),
@@ -157,17 +144,11 @@ impl Binder {
         if !addresses.is_empty() {
             write.extend_from_slice(&data.pointed().to_ne_bytes());
         }
-        // The driver answers a call with a handful of short notices; what
-        // the other side sent lands in the mapped room, not here. While the
-        // reply is awaited the other side may call back into an object
-        // served here, which is answered and the waiting gone on with.
         let mut waiting = Waiting { words: write, replies: Vec::new() };
         let mut said = [0u8; SAID_BYTES];
         loop {
             let heard = self.exchange(&mut waiting, &mut said).context("send a call")?;
             if let Some(reply) = self.take_in(&said[..heard], &mut waiting, true)? {
-                // What is still waiting to be told is told now: nothing
-                // asks the driver on this thread again for certain.
                 if !waiting.words.is_empty() {
                     self.exchange(&mut waiting, &mut []).context("answer the driver")?;
                 }
@@ -176,8 +157,6 @@ impl Binder {
         }
     }
 
-    /// Take the calls made on the objects served through this end, on the
-    /// thread that asks, for as long as the driver gives them out.
     pub fn serve(&self) -> Result<Infallible> {
         ensure!(self.served.is_some(), "this end of the driver serves no object");
         let mut waiting = Waiting::default();
@@ -191,9 +170,6 @@ impl Binder {
         }
     }
 
-    /// Tell the driver what is waiting to be told and hear what it has to
-    /// say into `said`, waiting for it to have something where `said` has
-    /// room; gives how much it said.
     fn exchange(&self, waiting: &mut Waiting, said: &mut [u8]) -> Result<usize> {
         let mut bwr = WriteRead {
             write_size: waiting.words.len() as u64,
@@ -209,8 +185,6 @@ impl Binder {
         Ok(bwr.read_consumed as usize)
     }
 
-    /// Answer a call the driver brought for an object served here: the
-    /// reply, and the room the call lay in given back, wait to be told.
     fn take_call(&self, td: &TransactionData, waiting: &mut Waiting) {
         let data = match td.data_size {
             0 => &[][..],
@@ -244,26 +218,14 @@ impl Binder {
         waiting.replies.push(reply);
     }
 
-    /// What the driver said, taken in: the reply among it if it has come.
-    /// What it says of the objects served here is answered, and a call on
-    /// one of them is taken, each answer waiting to be told.
-    ///
-    /// `calling` says a call made on this thread awaits its reply. Without
-    /// one, what the driver says of a reply that did not arrive is of a
-    /// reply this thread gave, to a caller that has gone since: there is
-    /// nobody left to tell.
     fn take_in(&self, mut said: &[u8], waiting: &mut Waiting, calling: bool) -> Result<Option<Reply<'_>>> {
         while said.len() >= 4 {
             let note = u32::from_ne_bytes(said[..4].try_into().expect("four bytes"));
             said = &said[4..];
             match note {
                 BR_NOOP | BR_OK | BR_TRANSACTION_COMPLETE | BR_SPAWN_LOOPER => {}
-                // Another program has come to hold an object served here,
-                // which the driver wants acknowledged before it says so
-                // again.
                 BR_INCREFS => waiting.tell(BC_INCREFS_DONE, part(&mut said, 16)?),
                 BR_ACQUIRE => waiting.tell(BC_ACQUIRE_DONE, part(&mut said, 16)?),
-                // No other program can call the object any more.
                 BR_RELEASE => {
                     let cookie = u64::from_ne_bytes(part(&mut said, 16)?[8..].try_into().expect("eight bytes"));
                     if let Some(objects) = &self.served {
@@ -303,7 +265,6 @@ impl Binder {
         Ok(None)
     }
 
-    /// Tell the driver something that needs no answer.
     fn tell(&self, note: u32, payload: &[u8]) -> Result<()> {
         let mut write = note.to_ne_bytes().to_vec();
         write.extend_from_slice(payload);
@@ -326,7 +287,6 @@ impl Drop for Binder {
     }
 }
 
-/// The next `n` bytes of what the driver said, taken off its front.
 fn part<'a>(said: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
     ensure!(said.len() >= n, "the driver cut what it said short: {} bytes where {n} follow", said.len());
     let (head, rest) = said.split_at(n);
@@ -335,7 +295,6 @@ fn part<'a>(said: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
 }
 
 unsafe fn call(file: &File, request: u32, arg: *mut libc::c_void) -> Result<()> {
-    // The driver answers a signal with EINTR and expects the call again.
     loop {
         if unsafe { libc::ioctl(file.as_raw_fd(), request as libc::Ioctl, arg) } >= 0 {
             return Ok(());
@@ -347,18 +306,13 @@ unsafe fn call(file: &File, request: u32, arg: *mut libc::c_void) -> Result<()> 
     }
 }
 
-/// An object in another process, held open until this goes out of scope.
 pub struct Handle<'a> {
     binder: &'a Binder,
     handle: u32,
-    /// Whether a share of the object was taken, and so has to be given
-    /// back.
     held: bool,
 }
 
 impl<'a> Handle<'a> {
-    /// Take a share of an object the driver has just named, so it outlives
-    /// the reply that carried it.
     pub fn hold(binder: &'a Binder, handle: u32) -> Result<Handle<'a>> {
         binder.tell(BC_ACQUIRE, &handle.to_ne_bytes()).context("hold an object open")?;
         Ok(Handle { binder, handle, held: true })
@@ -377,7 +331,6 @@ impl Drop for Handle<'_> {
     }
 }
 
-/// What the other side answered, in the driver's own room until it is read.
 pub struct Reply<'a> {
     binder: &'a Binder,
     buffer: u64,
@@ -389,8 +342,6 @@ impl<'a> Reply<'a> {
         Reader::new(self.data)
     }
 
-    /// The reply as it lies in the driver's room, for a layout the plain
-    /// reader does not know.
     pub fn bytes(&self) -> &'a [u8] {
         self.data
     }

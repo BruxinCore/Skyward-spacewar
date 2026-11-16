@@ -1,16 +1,3 @@
-//! Having the phone's secure world check a credential. The secure world
-//! keeps what it needs to recognise each credential, counts the wrong
-//! answers, and holds off further tries once there have been too many; none
-//! of that can be worked around from outside. What it hands back for a
-//! right answer is the note the key service wants before it will use a key
-//! the credential guards.
-//!
-//! A phone has one of two kinds of credential service: the newer kind,
-//! registered with the service directory, or the older kind, a hardware
-//! service reached over the other driver. The newer kind is taken where the
-//! phone describes one, as Android's own gatekeeperd takes it.
-
-// The calls and answers serve the phone's own driver and the host tests.
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use crate::token::Token;
@@ -19,37 +6,22 @@ use skyward_binder::hidl::{Answer, Message};
 use skyward_binder::parcel::{Parcel, Reader};
 use skyward_binder::status;
 
-/// The newer kind, as it registers with the service directory.
 pub const SERVICE: &str = "android.hardware.gatekeeper.IGatekeeper/default";
 const INTERFACE: &str = "android.hardware.gatekeeper.IGatekeeper";
 
-/// The older kind, a hardware service.
 pub const HARDWARE_SERVICE: &str = "android.hardware.gatekeeper@1.0::IGatekeeper";
 const INSTANCE: &str = "default";
 
-/// The method that checks a credential, as each kind numbers its methods.
 const VERIFY: u32 = 4;
 const HARDWARE_VERIFY: u32 = 2;
 
-/// How the older kind answers.
 const RIGHT: i32 = 0;
 const RIGHT_BUT_RENEW: i32 = 1;
 const HOLDING_OFF: i32 = -2;
-
-/// The newer kind's own error for a try made while it holds off further
-/// ones. It does not say for how long.
 const RETRY_TIMEOUT: i32 = -2;
-
-/// How long the older kind's answer itself is: what it says, how long the
-/// caller must wait, and the frame for the note.
 const ANSWER_BYTES: usize = 24;
-
-/// Where the note's frame says how long the note is.
 const NOTE_LENGTH: std::ops::Range<usize> = 16..20;
 
-/// The call that has the newer kind check `password` against what it
-/// recognises in `slot`. Nothing asked for the note, so it answers no
-/// challenge.
 fn ask(slot: u32, enrolled: &[u8], password: &[u8]) -> Parcel {
     let mut call = Parcel::call(INTERFACE);
     call.i32(slot as i32);
@@ -59,7 +31,6 @@ fn ask(slot: u32, enrolled: &[u8], password: &[u8]) -> Parcel {
     call
 }
 
-/// What the newer kind answered: the note it wrote for a right answer.
 fn note(read: &mut Reader) -> Result<Token> {
     if let Err(e) = status::ok(read) {
         return Err(match status::refused_with(&e) {
@@ -69,8 +40,6 @@ fn note(read: &mut Reader) -> Result<Token> {
         });
     }
     let end = read.structure().context("read what the secure world said about the credential")?;
-    // Whether the credential is to be enrolled again, and how long to wait,
-    // which a right answer leaves at nothing.
     read.i32().context("read how the secure world took the credential")?;
     read.i32().context("read how long the secure world asks to wait")?;
     let note = written(read).context("read the note the secure world wrote")?;
@@ -78,8 +47,6 @@ fn note(read: &mut Reader) -> Result<Token> {
     Ok(note)
 }
 
-/// A note as the newer kind hands it over: a structure of its own, with
-/// the time it was written a structure inside it.
 fn written(read: &mut Reader) -> Result<Token> {
     let end = read.structure()?;
     let challenge = read.i64()?;
@@ -97,7 +64,6 @@ fn written(read: &mut Reader) -> Result<Token> {
     Ok(Token { challenge, user, authenticator, kind, when, mac })
 }
 
-/// The call that has the older kind check `password` against `slot`.
 fn ask_hardware(slot: u32, enrolled: &[u8], password: &[u8]) -> Message {
     let mut call = Message::call(HARDWARE_SERVICE);
     call.u32(slot);
@@ -107,7 +73,6 @@ fn ask_hardware(slot: u32, enrolled: &[u8], password: &[u8]) -> Message {
     call
 }
 
-/// What the older kind answered: the note it wrote for a right answer.
 fn hardware_note(read: &mut Answer) -> Result<Token> {
     read.status().context("have the secure world check the credential")?;
     let answer = read.pointed().context("read what the secure world said about the credential")?;
@@ -129,7 +94,6 @@ fn hardware_note(read: &mut Answer) -> Result<Token> {
     Token::of(note)
 }
 
-/// The phone's credential service, as this program talks to it.
 #[cfg(target_os = "android")]
 pub enum Gatekeeper<'a> {
     Newer(skyward_binder::driver::Handle<'a>),
@@ -138,13 +102,10 @@ pub enum Gatekeeper<'a> {
 
 #[cfg(target_os = "android")]
 impl<'a> Gatekeeper<'a> {
-    /// Reach the running credential service: the newer kind through
-    /// `binder` where the phone describes one, the older kind through
-    /// `hardware` otherwise. Say so where it is not running.
     pub fn open(binder: &'a skyward_binder::driver::Binder, hardware: &'a skyward_binder::driver::Binder) -> Result<Gatekeeper<'a>> {
         use skyward_binder::{hidl, service};
         let not_running = |name: &str| format!("{name} is not running; the phone's credential service has to be started first");
-        if service::declared(binder, SERVICE)? {
+        if service::declared(binder, SERVICE).unwrap_or(false) {
             let device = service::find(binder, SERVICE)?.with_context(|| not_running(SERVICE))?;
             return Ok(Gatekeeper::Newer(device));
         }
@@ -152,8 +113,6 @@ impl<'a> Gatekeeper<'a> {
         Ok(Gatekeeper::Older(device))
     }
 
-    /// What the service says it serves. This changes nothing and takes no
-    /// credential, so it is what to call to see that the service answers.
     pub fn serves(&self) -> Result<String> {
         match self {
             Gatekeeper::Newer(device) => skyward_binder::service::interface(device),
@@ -161,10 +120,6 @@ impl<'a> Gatekeeper<'a> {
         }
     }
 
-    /// Which version of its interface the newer kind serves, which it
-    /// answers only once it has taken the call as one for that interface.
-    /// The older kind numbers its version in its own name, and has none to
-    /// answer.
     pub fn version(&self) -> Result<Option<i32>> {
         match self {
             Gatekeeper::Newer(device) => skyward_binder::service::version(device, INTERFACE).map(Some),
@@ -172,14 +127,6 @@ impl<'a> Gatekeeper<'a> {
         }
     }
 
-    /// Have the secure world check `password` against what it recognises
-    /// in `slot`, and give back the note it writes for a right answer.
-    /// `enrolled` is what the phone recorded when that slot was enrolled.
-    /// A phone keeps more than one slot for a user: one for what they
-    /// type and one for the secret behind it.
-    ///
-    /// A wrong answer is counted against the slot by the secure world, so
-    /// this is not something to call twice over on a guess.
     pub fn verify(&self, slot: u32, enrolled: &[u8], password: &[u8]) -> Result<Token> {
         let what = "have the secure world check the credential";
         match self {
@@ -199,8 +146,6 @@ impl<'a> Gatekeeper<'a> {
 mod tests {
     use super::*;
 
-    /// A structure as the other side writes it: that it is there, how long
-    /// it is, then its fields.
     fn structure(p: &mut Parcel, fields: impl FnOnce(&mut Parcel)) {
         p.i32(1);
         let at = p.here();
@@ -210,7 +155,6 @@ mod tests {
         p.fill(at, size);
     }
 
-    /// A note as the newer kind writes it, in a reply that went through.
     fn answered(mac: &[u8]) -> Vec<u8> {
         let mut p = Parcel::default();
         p.i32(0);

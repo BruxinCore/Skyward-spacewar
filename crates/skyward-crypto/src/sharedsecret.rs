@@ -1,36 +1,25 @@
-//! Agreeing with the secure world on the key it signs its notes with. A
-//! note the credential service writes is what the key service wants before
-//! it will use a key a screen lock guards, and the two recognise each
-//! other's notes only by a key they agree on first. Each part of the secure
-//! world that keeps keys offers a seed and a number used once; every part
-//! is told all of them, and each works out the same key from them. Android
-//! has its key service do this as the phone starts, before anything asks
-//! for a note.
-
-// The calls and answers serve the phone's own driver and the host tests.
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use anyhow::{Context, Result};
+use skyward_binder::hidl::{Answer, Message};
 use skyward_binder::parcel::{Parcel, Reader};
 use skyward_binder::status;
 
-/// What a part of the secure world that keeps keys registers as, where it
-/// agrees on such a key at all.
 pub const INTERFACE: &str = "android.hardware.security.sharedsecret.ISharedSecret";
+const HARDWARE_INTERFACE: &str = "android.hardware.keymaster@4.0::IKeymasterDevice";
 
 const GET_PARAMETERS: u32 = 1;
 const COMPUTE: u32 = 2;
 
-/// What one part of the secure world brings to the agreement.
+const HARDWARE_GET_PARAMETERS: u32 = 2;
+const HARDWARE_COMPUTE: u32 = 3;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Parameters {
-    /// What it keeps across starts, the same every time.
     pub seed: Vec<u8>,
-    /// What it draws afresh at each start.
     pub nonce: Vec<u8>,
 }
 
-/// What one part of the secure world answered when asked what it brings.
 fn parameters(read: &mut Reader) -> Result<Parameters> {
     status::ok(read).context("ask what the secure world brings to the agreement")?;
     let end = read.structure().context("read what the secure world brings")?;
@@ -40,14 +29,10 @@ fn parameters(read: &mut Reader) -> Result<Parameters> {
     Ok(Parameters { seed, nonce })
 }
 
-/// The call that tells a part of the secure world what every part brought,
-/// so it can work out the key from all of them.
 fn ask_compute(all: &[Parameters]) -> Parcel {
     let mut call = Parcel::call(INTERFACE);
     call.i32(all.len() as i32);
     for p in all {
-        // Each is a structure of its own: that it is there, how long it is,
-        // then its fields.
         call.i32(1);
         let at = call.here();
         call.i32(0);
@@ -59,15 +44,52 @@ fn ask_compute(all: &[Parameters]) -> Parcel {
     call
 }
 
-/// What came back from working out the key: what each part answers so the
-/// parts can be told apart from one another, which is the same everywhere
-/// the agreement held.
 fn agreed(read: &mut Reader) -> Result<Vec<u8>> {
     status::ok(read).context("have the secure world work out the key it signs its notes with")?;
     read.blob().context("read what the secure world answered about the key")
 }
 
-/// A part of the secure world that keeps keys, as this program talks to it.
+fn hardware_parameters(read: &mut Answer) -> Result<Parameters> {
+    read.status().context("ask what the secure world brings to the agreement")?;
+    let err = read.i32().context("ask what the secure world brings to the agreement")?;
+    anyhow::ensure!(err == 0, "the key service refused the agreement with error {err}");
+    let raw = read.pointed().context("read what the secure world brings")?;
+    anyhow::ensure!(raw.len() >= 48, "the key service answered {} bytes of sharing parameters", raw.len());
+    let seed_len = u32::from_le_bytes(raw[8..12].try_into().expect("four bytes")) as usize;
+    let seed_raw = read.pointed_slice().context("read the seed the secure world keeps")?;
+    let seed = seed_raw[..seed_len.min(seed_raw.len())].to_vec();
+    let nonce = raw[16..48].to_vec();
+    Ok(Parameters { seed, nonce })
+}
+
+fn ask_hardware_compute(all: &[Parameters]) -> Message {
+    let mut call = Message::call(HARDWARE_INTERFACE);
+    let mut raw = vec![0u8; all.len() * 48];
+    let mut seeds = Vec::with_capacity(all.len());
+    for (i, p) in all.iter().enumerate() {
+        let entry = &mut raw[i * 48..(i + 1) * 48];
+        let seed_at = call.keep(p.seed.clone());
+        entry[0..8].copy_from_slice(&seed_at.to_le_bytes());
+        entry[8..12].copy_from_slice(&(p.seed.len() as u32).to_le_bytes());
+        let nonce_len = p.nonce.len().min(32);
+        entry[16..16 + nonce_len].copy_from_slice(&p.nonce[..nonce_len]);
+        seeds.push((i * 48, seed_at, p.seed.len()));
+    }
+    let parent = call.framed_vec(raw, all.len());
+    for (offset, at, len) in seeds {
+        call.address_at(at, len, Some((parent, offset)));
+    }
+    call
+}
+
+fn hardware_agreed(read: &mut Answer) -> Result<Vec<u8>> {
+    read.status().context("have the secure world work out the key it signs its notes with")?;
+    let err = read.i32().context("have the secure world work out the key it signs its notes with")?;
+    let check = read.vec_bytes().context("read what the secure world answered about the key")?.to_vec();
+    anyhow::ensure!(err == 0, "the key service refused to work out the key with error {err}");
+    Ok(check)
+}
+
 #[cfg(target_os = "android")]
 pub struct SharedSecret<'a> {
     device: skyward_binder::driver::Handle<'a>,
@@ -75,7 +97,6 @@ pub struct SharedSecret<'a> {
 
 #[cfg(target_os = "android")]
 impl<'a> SharedSecret<'a> {
-    /// Reach the part registered under `name`, or say that none is.
     pub fn open(binder: &'a skyward_binder::driver::Binder, name: &str) -> Result<SharedSecret<'a>> {
         let device = skyward_binder::service::find(binder, name)?
             .with_context(|| format!("{name} is not running; the phone's key service has to be started first"))?;
@@ -99,12 +120,6 @@ impl<'a> SharedSecret<'a> {
     }
 }
 
-/// Have every part of the secure world named in `names` agree on the key
-/// they sign their notes with, as Android's key service has them agree as
-/// the phone starts: each is asked what it brings, and then every one of
-/// them is told what all of them brought. They are told it in one order,
-/// the order the values sort in, since each works the key out from the
-/// values in the order it is given them. Returns how many agreed.
 #[cfg(target_os = "android")]
 pub fn agree(binder: &skyward_binder::driver::Binder, names: &[String]) -> Result<usize> {
     let parts: Vec<SharedSecret> = names.iter().map(|n| SharedSecret::open(binder, n)).collect::<Result<_>>()?;
@@ -121,11 +136,42 @@ pub fn agree(binder: &skyward_binder::driver::Binder, names: &[String]) -> Resul
     Ok(parts.len())
 }
 
+#[cfg(target_os = "android")]
+pub fn agree_hardware(hardware: &skyward_binder::driver::Binder, names: &[String]) -> Result<usize> {
+    let mut parts = Vec::new();
+    for name in names {
+        let (iface, instance) = name.split_once('/').unwrap_or((name.as_str(), "default"));
+        let handle = skyward_binder::hidl::find(hardware, iface, instance)?
+            .with_context(|| format!("{name} is not running; the phone's key service has to be started first"))?;
+        parts.push((name.as_str(), handle));
+    }
+    let mut all = Vec::new();
+    for (name, handle) in &parts {
+        let reply = handle
+            .transact(HARDWARE_GET_PARAMETERS, &Message::call(HARDWARE_INTERFACE))
+            .with_context(|| format!("ask {name} what it brings to the agreement"))?;
+        all.push(hardware_parameters(&mut Answer::new(reply.bytes()))?);
+    }
+    all.sort();
+    let call = ask_hardware_compute(&all);
+    let mut agreed = None;
+    for (name, handle) in &parts {
+        let reply = handle
+            .transact(HARDWARE_COMPUTE, &call)
+            .with_context(|| format!("have {name} work out the key it signs its notes with"))?;
+        let said = hardware_agreed(&mut Answer::new(reply.bytes()))?;
+        anyhow::ensure!(
+            agreed.get_or_insert_with(|| said.clone()) == &said,
+            "{name} worked out another key than the rest of the secure world"
+        );
+    }
+    Ok(parts.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A reply that went through, carrying one structure.
     fn answered(fields: impl FnOnce(&mut Parcel)) -> Vec<u8> {
         let mut p = Parcel::default();
         p.i32(0);
