@@ -1,16 +1,13 @@
-//! What a control does once it is tapped, typed on or swiped.
-
 use super::*;
 
 impl App {
-    /// Carry out a tapped control.
+
     pub(super) fn act(&mut self, action: Action, now: u64) -> Vec<Effect> {
         let l = self.state.lang;
         match action {
             Action::Open(s) => {
                 if s == Screen::Search && self.screen() == Screen::Home {
-                    // The bar moves up from where it stands unfolded: a
-                    // page easing there for the keys gets there at once.
+
                     if let Some((rest, _)) = self.seek.take() {
                         self.top_mut().1 = rest;
                     }
@@ -39,8 +36,7 @@ impl App {
                     self.refresh();
                 }
             }
-            // The switch moves at once; the runtime then tells how the WLAN
-            // came up, or went off.
+
             Action::Toggle(Switch::Wlan) => {
                 let w = self.state.wlan.as_mut().expect("the WLAN switch shows on a phone whose WLAN is brought up");
                 let on = matches!(w.power, Power::Off | Power::Failed(_));
@@ -78,8 +74,7 @@ impl App {
                 self.state.reboot = i;
                 self.refresh();
             }
-            // Everything takes in every part, so choosing it leaves the
-            // parts out, and choosing a part on its own leaves it out.
+
             Action::WipeItem(item) => {
                 let k = WIPES.iter().position(|&w| w == item).expect("the page offers only what it lists");
                 let on = !self.state.wipe[k];
@@ -149,17 +144,15 @@ impl App {
                 self.state.clip = Some(Clip { op, path });
                 return self.back(now);
             }
-            // A folder cannot go inside itself, and an entry moved to the
-            // folder it is in stays put: the entry stays picked for another
-            // folder.
+
             Action::Paste => {
                 let clip = self.state.clip.clone().expect("only a picked entry is pasted");
                 let (path, folder) = (std::path::Path::new(&clip.path), std::path::Path::new(&self.state.files.path));
                 let name = path.file_name().map_or_else(|| clip.path.clone(), |n| n.to_string_lossy().into_owned());
                 if folder.starts_with(path) {
-                    self.say(&tr!(l, "无法将\"{name}\"放入其自身中", "無法將「{name}」放入其本身中", "“{name}” can't go inside itself"), now);
+                    self.say(&tr!(l, "无法将\"{name}\"放入其自身中", "無法將「{name}」放入其本身中", "“{name}” can't go inside itself", "“{name}” não pode ser colocado dentro de si mesmo"), now);
                 } else if clip.op == FileOp::Move && path.parent() == Some(folder) {
-                    self.say(&tr!(l, "\"{name}\"已在该文件夹中", "「{name}」已在這個資料夾中", "“{name}” is already in this folder"), now);
+                    self.say(&tr!(l, "\"{name}\"已在该文件夹中", "「{name}」已在這個資料夾中", "“{name}” is already in this folder", "“{name}” já está nesta pasta"), now);
                 } else {
                     return vec![Effect::Paste { op: clip.op, path: clip.path, into: self.state.files.path.clone(), clash: None }];
                 }
@@ -198,7 +191,7 @@ impl App {
                 self.stack.pop();
                 self.settle_page();
                 self.refresh();
-                // Skipping the one entry picked leaves nothing to do.
+
                 if choice == ClashChoice::Skip {
                     self.state.clip = None;
                     return Vec::new();
@@ -256,7 +249,7 @@ impl App {
                 self.state.backup_to = place;
                 self.refresh();
             }
-            // All a backup holds is ticked to restore at first.
+
             Action::OpenBackup(i) => {
                 let entry = self.state.backups[i].clone();
                 let parts = entry.held.as_ref().map_or([false; 4], |h| h.parts);
@@ -350,8 +343,7 @@ impl App {
                     }
                 }
             }
-            // A shell already running goes to the folder; otherwise one starts
-            // there.
+
             Action::TerminalHere => {
                 let folder = self.state.files.path.clone();
                 let running = self.term.as_ref().is_some_and(|term| term.running);
@@ -390,7 +382,7 @@ impl App {
             }
             Action::JoinNetwork(i) => {
                 let w = self.state.wlan.as_ref().expect("networks show on a phone whose WLAN is brought up");
-                // A scan may have changed the list since the page was drawn.
+
                 let Some(network) = w.networks.get(i).cloned() else { return Vec::new() };
                 if w.joined.as_ref().is_some_and(|j| j.ssid == network.ssid) {
                     return self.act(Action::OpenJoined, now);
@@ -420,7 +412,7 @@ impl App {
             Action::OpenJoined => {
                 let w = self.state.wlan.as_ref().expect("a network is chosen on a phone whose WLAN is brought up");
                 let Some(j) = w.joined.clone() else { return Vec::new() };
-                // As found, where it still is; as it was chosen otherwise.
+
                 let found = w.networks.iter().find(|n| n.ssid == j.ssid).cloned();
                 let network = found.unwrap_or(Network {
                     ssid: j.ssid,
@@ -459,7 +451,7 @@ impl App {
             }
             Action::ChooseSecurity => {
                 self.state.adding.as_mut().expect("the protection is on the page that adds a network").choosing = true;
-                // The page draws the row held down while its list is open.
+
                 self.row_press = None;
                 self.row_art = None;
                 self.refresh();
@@ -468,7 +460,7 @@ impl App {
                 let a = self.state.adding.as_mut().expect("the protections open on the page that adds a network");
                 a.security = security;
                 a.choosing = false;
-                // With no password to type, the keyboard types the name.
+
                 if !security.password() {
                     a.field = Field::Name;
                 }
@@ -478,7 +470,7 @@ impl App {
                 self.state.adding.as_mut().expect("the protections open on the page that adds a network").choosing = false;
                 self.refresh();
             }
-            // Asking takes a network, which the WLAN page joins.
+
             Action::CheckUpdate => {
                 if !self.state.online() {
                     self.open(Screen::Wlan);
@@ -490,8 +482,7 @@ impl App {
                     return vec![Effect::CheckUpdate];
                 }
             }
-            // The package goes to internal storage, which the decrypt page
-            // opens, over a network the WLAN page joins.
+
             Action::Download => {
                 let release = self.state.newest().expect("the download is offered for the newest system").clone();
                 if !self.state.data.storage_open() {
@@ -521,7 +512,7 @@ impl App {
                 let Have::Whole(size) = self.state.have else { unreachable!("only a whole package is offered to install") };
                 return self.install_file(Place::Storage, format!("{DOWNLOADS}/{name}"), size, now);
             }
-            // Asking takes a network, which the WLAN page joins.
+
             Action::CheckSkyward => {
                 if !self.state.online() {
                     self.open(Screen::Wlan);
@@ -533,8 +524,7 @@ impl App {
                     return vec![Effect::CheckSkyward];
                 }
             }
-            // The build goes into the recovery partitions an install may
-            // write too, so one waits for the other.
+
             Action::UpdateSkyward => {
                 let build = self.state.skyward_newest().and_then(|n| n.build.clone()).expect("the update is offered for the newest release's build");
                 if !self.state.online() {
@@ -551,8 +541,7 @@ impl App {
                     return vec![Effect::UpdateSkyward(build)];
                 }
             }
-            // Only the download stops: writing, once begun, goes on to its
-            // end.
+
             Action::StopSkywardUpdate => {
                 let job = self.state.skyward_job.as_mut().expect("only an update under way is stopped");
                 if job.outcome.is_none() && !job.stopping && !matches!(job.stage, Some(SkywardStage::Write { .. })) {
@@ -566,7 +555,6 @@ impl App {
         Vec::new()
     }
 
-    /// The text the keyboard types into on this page.
     fn typing(&mut self) -> &mut String {
         match self.screen() {
             Screen::Search => &mut self.state.search,
@@ -584,8 +572,6 @@ impl App {
         }
     }
 
-    /// A key of the on-screen keyboard. A capital lasts one letter; return
-    /// opens the first result of a search, and runs a terminal's command.
     fn type_key(&mut self, cap: Cap, now: u64) -> Vec<Effect> {
         let (l, layer) = (self.state.lang, self.state.layer);
         match cap {
@@ -620,8 +606,7 @@ impl App {
                     let code = std::mem::take(&mut self.state.code);
                     return self.unlock(code);
                 }
-                // A name the folder cannot take is turned down here, in
-                // the user's words; an unchanged one leaves the page.
+
                 Screen::Rename => {
                     let name = self.state.new_name.clone();
                     let current = &self.state.file.as_ref().expect("the file page shows an entry").name;
@@ -635,9 +620,7 @@ impl App {
                         _ => return vec![Effect::Rename { path: self.entry_path(), name }],
                     }
                 }
-                // A password the network's protection cannot take is turned
-                // down here; one it can goes, and the WLAN page shows how
-                // joining goes.
+
                 Screen::WlanPassword => {
                     let network = self.state.joining.clone().expect("the password page is for a network");
                     match refused(l, network.security, &self.state.password) {
@@ -650,15 +633,14 @@ impl App {
                         }
                     }
                 }
-                // So is a name no network can have; the keyboard then types
-                // into the field turned down.
+
                 Screen::WlanAdd => {
                     let a = self.state.adding.as_mut().expect("the page adds a network");
                     let (field, why) = match a.name.len() {
                         0 => (Field::Name, Some(l.pick(["请输入网络名称", "請輸入網路名稱", "Enter the network's name"]).to_string())),
                         n if n > SSID_MAX => (
                             Field::Name,
-                            Some(tr!(l, "网络名称不能超过 {SSID_MAX} 个字符", "網路名稱不能超過 {SSID_MAX} 個字元", "A network's name can't be over {SSID_MAX} characters")),
+                            Some(tr!(l, "网络名称不能超过 {SSID_MAX} 个字符", "網路名稱不能超過 {SSID_MAX} 個字元", "A network's name can't be over {SSID_MAX} characters", "O nome da rede não pode ter mais de {SSID_MAX} caracteres")),
                         ),
                         _ if a.security.password() => (Field::Password, refused(l, a.security, &self.state.password).map(str::to_string)),
                         _ => (Field::Name, None),
@@ -686,8 +668,7 @@ impl App {
                 other => unreachable!("{other:?} shows no keyboard"),
             },
         }
-        // What is typed shows above the keyboard, which stays as it was
-        // while its keys do.
+
         if matches!(cap, Cap::Char(_) | Cap::Space | Cap::Backspace) && self.state.layer == layer {
             let t = self.theme();
             self.refresh_rows(0, (t.m.h as f32 - widgets::keyboard_height(&t)).floor() as u32);
@@ -697,7 +678,6 @@ impl App {
         Vec::new()
     }
 
-    /// What a swipe-to-confirm control slid to its end does.
     pub(super) fn confirmed(&mut self, which: Confirm, now: u64) -> Vec<Effect> {
         let (l, mut fx) = (self.state.lang, Vec::new());
         match which {
@@ -764,7 +744,7 @@ impl App {
                 (Some(Ok(slots)), Some(pick)) if pick != slots.active => fx.push(Effect::SetSlot(pick)),
                 (Some(Ok(slots)), _) => {
                     let slot = slots.active.letter();
-                    let said = tr!(l, "下次已从槽位 {slot} 启动", "下次已從槽位 {slot} 啟動", "Slot {slot} already starts next");
+                    let said = tr!(l, "下次已从槽位 {slot} 启动", "下次已從槽位 {slot} 啟動", "Slot {slot} already starts next", "O slot {slot} já está definido para a próxima inicialização");
                     self.say(&said, now);
                 }
                 _ => self.say(l.pick(["无法读取启动槽位", "無法讀取啟動槽位", "Couldn't read the boot slots"]), now),
@@ -778,8 +758,7 @@ impl App {
                 }
             }
             Confirm::DeleteEntry => fx.push(Effect::Delete(self.entry_path())),
-            // The partition has to be open; whether its users have unlocked
-            // their own files makes no difference.
+
             Confirm::Relabel => match self.state.data {
                 Data::Open | Data::Locked { .. } => fx.push(Effect::Relabel),
                 Data::Opening => self.say(l.pick(DATA_OPENING), now),
@@ -788,8 +767,7 @@ impl App {
                     self.say(l.pick(["请先在「解密」中打开 data 分区", "請先在「解密」中開啟 data 分割區", "Open the data partition in Decrypt first"]), now)
                 }
             },
-            // The data partition is reached through its own key whether or
-            // not it is open, but not while it is being opened or erased.
+
             Confirm::Filesystem => {
                 let row = self.fs_row().expect("the page of a partition shows one that was read");
                 let data = row.name == DATA_PARTITION;

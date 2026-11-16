@@ -1,21 +1,15 @@
-//! The slot page, the page of the two systems, and where an update in the
-//! slot stands.
-
 use super::*;
 
-/// A system to install beside the installed one, and the room its root
-/// takes so far.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SystemChoice {
     pub name: String,
     pub version: String,
-    /// The sizes there is room for, the least first.
+
     pub sizes: Vec<u64>,
-    /// Which of them is chosen.
+
     pub size: usize,
 }
 
-/// The system that starts, as the runtime last read the systems.
 pub fn starting(systems: &Overview) -> Who {
     if systems.other_starts {
         Who::Other
@@ -24,74 +18,60 @@ pub fn starting(systems: &Overview) -> Who {
     }
 }
 
-/// Work on the systems the runtime carries out for the systems page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemsWork {
-    /// Writing this system's boot set into the boot partitions; the phone
-    /// restarts into it once that is done.
+
     Switching(Who),
-    /// Taking the other system away.
+
     Removing,
 }
 
 impl App {
-    /// What the boot control holds of the slots, as the runtime read it, or
-    /// why it could not.
+
     pub fn set_boot_slots(&mut self, slots: Result<BootSlots, String>) {
         self.state.boot_slots = Some(slots);
         self.refresh();
     }
 
-    /// How switching the slot to start next went: what the boot control
-    /// holds of the slots now, or why it did not switch.
     pub fn slot_switched(&mut self, outcome: Result<BootSlots, String>, now: u64) {
         match outcome {
             Ok(slots) => {
                 self.state.next_slot = None;
                 self.state.boot_slots = Some(Ok(slots));
                 let slot = slots.active.letter();
-                self.say(&tr!(self.state.lang, "下次将从槽位 {slot} 启动", "下次將從槽位 {slot} 啟動", "Slot {slot} starts next"), now);
+                self.say(&tr!(self.state.lang, "下次将从槽位 {slot} 启动", "下次將從槽位 {slot} 啟動", "Slot {slot} starts next", "O slot {slot} iniciará na próxima vez"), now);
                 self.refresh();
             }
-            Err(why) => self.say(&tr!(self.state.lang, "切换失败：{why}", "切換失敗：{why}", "Couldn't switch: {why}"), now),
+            Err(why) => self.say(&tr!(self.state.lang, "切换失败：{why}", "切換失敗：{why}", "Couldn't switch: {why}", "Não foi possível alternar: {why}"), now),
         }
     }
 
-    /// The systems, as the runtime read them, or why it could not; work on
-    /// them that was under way has ended.
     pub fn set_systems(&mut self, systems: Result<Overview, String>) {
         self.state.systems = Some(systems);
         self.state.systems_work = None;
         self.refresh();
     }
 
-    /// Why the work on the systems the page asked for did not go: the
-    /// switch did not happen, or the other system was not taken away.
     pub fn systems_work_failed(&mut self, why: &str, now: u64) {
         let l = self.state.lang;
         let said = match self.state.systems_work.take() {
-            Some(SystemsWork::Removing) => tr!(l, "删除失败：{why}", "刪除失敗：{why}", "Couldn't remove: {why}"),
-            _ => tr!(l, "切换失败：{why}", "切換失敗：{why}", "Couldn't switch: {why}"),
+            Some(SystemsWork::Removing) => tr!(l, "删除失败：{why}", "刪除失敗：{why}", "Couldn't remove: {why}", "Não foi possível remover: {why}"),
+            _ => tr!(l, "切换失败：{why}", "切換失敗：{why}", "Couldn't switch: {why}", "Não foi possível alternar: {why}"),
         };
         self.say(&said, now);
         self.refresh();
     }
 
-    /// The second system's start stopped, for `why`, as its first program
-    /// told it: the systems page shows it, over the home page.
     pub fn system_stopped(&mut self, why: String) {
         self.state.system_notice = Some(why);
         self.open(Screen::Systems);
     }
 
-    /// A switch to `to` a system asked for before the recovery started is
-    /// under way: the systems page shows it, over the home page.
     pub fn switch_asked(&mut self, to: Who) {
         self.state.systems_work = Some(SystemsWork::Switching(to));
         self.open(Screen::Systems);
     }
 
-    /// Where the update stands, as the runtime read it or a merge has come.
     pub fn set_update(&mut self, standing: Standing) {
         if self.state.update != standing {
             self.state.update = standing;
@@ -162,7 +142,6 @@ mod tests {
         assert!(app.frame(&f, &i).hits.iter().all(|h| !matches!(h.action, Action::Confirm(_))), "nothing to swipe");
     }
 
-    /// The systems with a second one installed, the main one starting.
     fn two_systems() -> Overview {
         Overview {
             installed: skyward_systems::Named { name: "HyperOS 3".into(), version: Some("OS3.0.308.0.WMACNXM".into()) },
@@ -173,8 +152,6 @@ mod tests {
         }
     }
 
-    /// The systems page opened from the home page of a phone that can hold
-    /// a second system, with the systems read.
     fn systems_page(f: &Fonts, i: &DeviceInfo, systems: Overview) -> App {
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.state.dual_boot = true;
@@ -213,7 +190,7 @@ mod tests {
         assert_eq!(swipe(&mut app, &f, &i, Confirm::SwitchSystem), vec![Effect::SwitchSystem(Who::Other)]);
         assert_eq!((app.state.systems_work, app.state.system_pick), (Some(SystemsWork::Switching(Who::Other)), None));
         assert!(app.frame(&f, &i).hits.is_empty(), "nothing to tap while the boot partitions are written");
-        // The card tapped darkens and comes back, as a row of a list does.
+
         app.tick(1000);
         app.key(Key::Back, 1000);
         assert_eq!((app.screen(), app.deadline(1000)), (Screen::Systems, Some(1000 + TOAST_MS)), "the page stays until they are, and says why");
@@ -228,7 +205,6 @@ mod tests {
         assert_eq!((app.screen(), app.state.system_pick), (Screen::Home, None), "a pick left unswitched is put down");
     }
 
-    /// The page as drawn for `systems`, top to bottom.
     fn systems_drawn(f: &Fonts, i: &DeviceInfo, systems: Overview) -> Vec<u8> {
         let mut app = App::new(Screen::Systems, W, H, PPD);
         (app.state.dual_boot, app.state.systems) = (true, Some(Ok(systems)));
@@ -237,10 +213,6 @@ mod tests {
         pages::render(Screen::Systems, &cx).canvas.data.clone()
     }
 
-    /// A computer wrote the boot partitions over fastboot while they held
-    /// the second system's boot images: the page says so, and the main
-    /// system's saved images go over what is there only once it is picked
-    /// and swiped.
     #[test]
     fn boot_partitions_written_by_another_hand_are_told_of_and_written_over_once_swiped() {
         use skyward_systems::Held;
@@ -254,10 +226,6 @@ mod tests {
         assert_eq!(swipe(&mut app, &f, &i, Confirm::SwitchSystem), vec![Effect::SwitchSystem(Who::Installed)]);
     }
 
-    /// /metadata was erased while the boot partitions held a second
-    /// system's boot images: nothing is kept of a second system, and the
-    /// page neither shows the main system as the one that starts nor has
-    /// anything to switch.
     #[test]
     fn boot_partitions_nothing_is_kept_of_are_not_shown_as_the_main_systems() {
         use skyward_systems::Held;
@@ -304,8 +272,7 @@ mod tests {
         let mut app = sideloading(&f, &i);
         app.install(Event::Checking { size: 3 << 30 }, 0);
         app.install(Event::System { name: "Ubuntu Touch".into(), version: "24.04".into(), sizes: vec![3 << 30, 8 << 30, 16 << 30] }, 0);
-        // The package lit the panel, so the user looks and taps past the
-        // wake guard.
+
         tap_at(&mut app, &f, &i, Action::SystemSize(1), 1000);
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::InstallSystem)).unwrap().rect;
         let y = track.centre().1 - app.top().1;

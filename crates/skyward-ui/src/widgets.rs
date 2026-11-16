@@ -9,19 +9,15 @@ use crate::sprite::Sprite;
 use crate::theme::Theme;
 use std::f32::consts::FRAC_PI_4;
 
-/// Where a drawn card ends and where each of its rows lies, for hit testing.
 pub struct Block {
     pub bottom: f32,
     pub rows: Vec<Rect>,
 }
 
-/// The WLAN's fan centred on `(cx, cy)`, its widest arc reaching `r` from
-/// the dot the arcs open up from: the first `level` arcs in `lit`, the
-/// rest in `unlit`.
 pub fn wlan_fan(c: &mut Canvas, cx: f32, cy: f32, r: f32, level: u8, lit: Rgba, unlit: Rgba) {
     let w = 0.17 * r;
     let dot = 0.13 * r;
-    // From the top of the widest arc to the foot of the dot.
+
     let apex = cy + (r - dot) / 2.0;
     for (k, reach) in [0.42f32, 0.71, 1.0].into_iter().enumerate() {
         let color = if (k as u8) < level { lit } else { unlit };
@@ -30,8 +26,6 @@ pub fn wlan_fan(c: &mut Canvas, cx: f32, cy: f32, r: f32, level: u8, lit: Rgba, 
     c.fill_circle(cx, apex, dot, lit);
 }
 
-/// A padlock `h` tall centred on `(cx, cy)`: its body, and the shackle
-/// over it.
 pub fn padlock(c: &mut Canvas, cx: f32, cy: f32, h: f32, color: Rgba) {
     let (bw, bh) = (0.84 * h, 0.6 * h);
     let sw = 0.13 * h;
@@ -44,8 +38,6 @@ pub fn padlock(c: &mut Canvas, cx: f32, cy: f32, h: f32, color: Rgba) {
     c.fill_round_rect(cx - bw / 2.0, body, bw, bh, 0.12 * h, color);
 }
 
-/// The colours a card is drawn in: the page's own, or light on dark over the
-/// About backdrop.
 #[derive(Clone, Copy)]
 pub struct Tone {
     pub card: Rgba,
@@ -54,12 +46,12 @@ pub struct Tone {
     pub value: Rgba,
     pub chevron: Rgba,
     pub caption: Rgba,
-    /// The arcs of a WLAN fan its signal does not light.
+
     pub faint: Rgba,
-    /// The round button at the end of a WLAN network's row, and its arrow.
+
     pub round: Rgba,
     pub round_mark: Rgba,
-    /// The arrows after the value of a row that opens a list of choices.
+
     pub updown: Rgba,
 }
 
@@ -96,8 +88,6 @@ impl Tone {
         }
     }
 
-    /// White on the accent, as the network joined stands out on the WLAN
-    /// page: what is not the title at 60%, the round button at 18%.
     pub fn lit(t: &Theme) -> Tone {
         let (accent, white) = (t.pal.accent, Rgba::rgb(255, 255, 255));
         let at = |k: f32| crate::color::mix(accent, white, k);
@@ -125,12 +115,8 @@ fn chevron(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
     c.line(x1, cy, x0, cy + h / 2.0 - sw / 2.0, sw, color);
 }
 
-/// Punctuation that never starts a line; at the end of a full line it hangs
-/// past the edge instead.
 const NO_LINE_START: &str = "，。、；：！？）」』》%,.;:!?)]>”";
 
-/// Opening punctuation that never ends a line; it moves down with what it
-/// opens.
 const NO_LINE_END: &str = "（「『《([<“";
 
 pub(crate) fn wrap(c: &Canvas, face: &Face, text: &str, px: f32, max_w: f32) -> Vec<String> {
@@ -144,11 +130,7 @@ pub(crate) fn wrap(c: &Canvas, face: &Face, text: &str, px: f32, max_w: f32) -> 
                 line.push(ch);
                 continue;
             }
-            // A Latin word, file names, links and English words with an
-            // apostrophe among them, moves to the next line whole, unless it
-            // fills the line alone: then a path breaks after the last of its
-            // slashes on the line, and any other word where the line ends.
-            // An opening bracket in front of what moves goes with it.
+
             let word = |r: char| r.is_ascii_alphanumeric() || matches!(r, '_' | '-' | '.' | '/' | ':' | '\'');
             let mut split = line.len();
             if word(ch) {
@@ -185,35 +167,25 @@ pub(crate) fn wrap(c: &Canvas, face: &Face, text: &str, px: f32, max_w: f32) -> 
     lines
 }
 
-/// Status-bar contents: the clock and, when a fuel gauge is present, the
-/// battery level and, while the cable is in, charging or full, the bolt
-/// past it.
 pub struct Bar<'a> {
     pub clock: &'a str,
     pub battery: Option<(u8, Option<Bolt>)>,
-    /// The network joined, while it has an address.
+
     pub wlan: Option<WlanMark>,
-    /// The data partition, open or not; nothing once it is wiped, when
-    /// there is nothing in it to open.
+
     pub data: Option<bool>,
-    /// The slot the system runs from, on an A/B phone.
+
     pub slot: Option<&'a str>,
-    /// The battery's temperature, in tenths of a degree Celsius, which the
-    /// bar gives to the tenth.
+
     pub temp: Option<i32>,
 }
 
-/// The bolt past the battery while the cable is in, as the stock bar draws
-/// it: one step, or two while a charger charges quickly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bolt {
     Charging,
     Quick,
 }
 
-/// What the status bar shows of the network joined: how many of the fan's
-/// three arcs its signal lights, whether data came in and went out in the
-/// last second, and how fast in all, in figures over their unit.
 pub struct WlanMark {
     pub level: u8,
     pub receiving: bool,
@@ -222,19 +194,12 @@ pub struct WlanMark {
     pub unit: &'static str,
 }
 
-/// Below this level the battery fills red while the cable is out.
 pub const LOW_BATTERY: u8 = 20;
 
-/// Clock on the left; on the right the battery as the stock status bar draws
-/// it, with a bolt past it while the cable is in, and before it the network
-/// joined and how fast data goes over it, the data partition's lock, the
-/// slot in a tag as the stock bar tags a VPN, and the battery's temperature
-/// in figures over their unit as the stock bar gives a speed. `ink` colours
-/// the clock and every mark but the battery.
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
     let m = &t.m;
     let cy = m.status_cy;
-    // Digits carry no descender, so centre on half their height (≈0.72 em).
+
     c.text(&f.status, bar.clock, m.status_x, cy + m.status_px * 0.36, m.status_px, ink, None);
     let mut right = m.w as f32 - m.status_right;
     if let Some((level, charging)) = bar.battery {
@@ -248,9 +213,7 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
         c.lay(&art, ox, oy, 1.0);
         right -= m.dp(BATTERY_W_DP + BATTERY_CAP_DP);
     }
-    // From the battery leftwards: the network's fan, the data partition's
-    // lock, the slot's badge, the temperature, and leftmost, as the stock
-    // bar keeps it, how fast data goes.
+
     let gap = m.dp(MARK_GAP_DP);
     let mut left = right;
     if let Some(w) = &bar.wlan {
@@ -274,36 +237,24 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
     }
 }
 
-/// Room between the marks on the bar's right, as the stock bar leaves it
-/// after its network speed and before its battery, in dp.
 const MARK_GAP_DP: f32 = 4.33;
 
-/// The stock status bar icons' corners, which ease into their sides: from
-/// where a side starts to bend to where the next one is straight again,
-/// three cubic pieces, in shares of how far along each side the bend
-/// reaches, in the corner's own frame, the side coming in along x and the
-/// side going out along y. Read off the stock NFC icon.
 const SMOOTH_CORNER: [[(f32, f32); 4]; 3] = [
     [(-1.0, 0.0), (-0.65, 0.0), (-0.475, 0.0), (-0.341, 0.068)],
     [(-0.341, 0.068), (-0.2236, 0.128), (-0.128, 0.2236), (-0.068, 0.341)],
     [(-0.068, 0.341), (0.0, 0.475), (0.0, 0.65), (0.0, 1.0)],
 ];
 
-/// Points taken along each cubic piece of a corner.
 const SMOOTH_STEPS: usize = 4;
 
-/// Where the cubic `piece` stands at `s` of the way along it.
 fn cubic([p0, p1, p2, p3]: [(f32, f32); 4], s: f32) -> (f32, f32) {
     let r = 1.0 - s;
     let (a, b, c, d) = (r * r * r, 3.0 * r * r * s, 3.0 * r * s * s, s * s * s);
     (a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0, a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1)
 }
 
-/// The outline of a rectangle whose corners ease into its sides as the
-/// stock status bar's icons' do, bending `bend` along each side from each
-/// corner: points round it, clockwise, for a convex fill.
 fn smooth_rect(x: f32, y: f32, w: f32, h: f32, bend: f32) -> Vec<(f32, f32)> {
-    // Each corner, the way the outline comes into it and the way it leaves.
+
     let corners = [
         ((x + w, y), (1.0, 0.0), (0.0, 1.0)),
         ((x + w, y + h), (0.0, 1.0), (-1.0, 0.0)),
@@ -321,8 +272,6 @@ fn smooth_rect(x: f32, y: f32, w: f32, h: f32, bend: f32) -> Vec<(f32, f32)> {
     pts
 }
 
-/// `shape`'s coverage less `cut`'s, in `ink`: a mark filled, its details
-/// cut out of it, as the stock bar draws its icons.
 fn knock_out(shape: &Canvas, cut: &Canvas, ink: Rgba) -> Canvas {
     let mut art = Canvas::new(shape.w, shape.h);
     for (i, px) in art.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -332,19 +281,14 @@ fn knock_out(shape: &Canvas, cut: &Canvas, ink: Rgba) -> Canvas {
     art
 }
 
-// The slot's badge, as the stock bar's NFC badge, in dp: its side, how far
-// its corners bend, and how tall the capital cut out of it stands.
 const BADGE_DP: f32 = 12.67;
 const BADGE_BEND_DP: f32 = 3.27;
 const BADGE_CAP_DP: f32 = 6.6;
 
-/// `letter` cut out of a filled badge in `ink`, ending at `right` on the
-/// bar's middle `cy`: its own canvas, where it goes, and how wide it is.
 fn badge(t: &Theme, f: &Fonts, letter: &str, right: f32, cy: f32, ink: Rgba) -> (Canvas, i32, i32, f32) {
     let m = &t.m;
     let side = m.dp(BADGE_DP);
-    // The size whose capitals stand that tall, from a size large enough to
-    // measure them to a hundredth.
+
     let px = m.dp(BADGE_CAP_DP) * 100.0 / f.speed.cap(100.0);
     let (ox, oy) = ((right - side - 1.0).floor(), (cy - side / 2.0 - 1.0).floor());
     let n = ((right - ox + 1.0).ceil() as u32).max((cy + side / 2.0 - oy + 1.0).ceil() as u32);
@@ -352,18 +296,13 @@ fn badge(t: &Theme, f: &Fonts, letter: &str, right: f32, cy: f32, ink: Rgba) -> 
     let white = Rgba::rgb(255, 255, 255);
     let mut shape = Canvas::new(n, n);
     shape.fill_convex(&smooth_rect(x, top, side, side, m.dp(BADGE_BEND_DP)), white);
-    // The letter centred in the badge by its ink.
+
     let mut cut = Canvas::new(n, n);
     let (l, r) = f.speed.ink_span(letter, px);
     cut.text(&f.speed, letter, x + side / 2.0 - (l + r) / 2.0, top + (side + m.dp(BADGE_CAP_DP)) / 2.0, px, white, None);
     (knock_out(&shape, &cut, ink), ox as i32, oy as i32, side)
 }
 
-// The data partition's lock, drawn as the stock bar draws its icons, in
-// dp: how tall it stands shut, its body's width and height and how far the
-// body's corners bend, its shackle's stroke and outer width, how far an
-// open one rises and how far its right leg reaches below the arc, and the
-// keyhole cut out of the body: its round, and the slot under it.
 const LOCK_MARK_H_DP: f32 = 12.67;
 const LOCK_BODY_W_DP: f32 = 10.0;
 const LOCK_BODY_H_DP: f32 = 7.0;
@@ -375,20 +314,16 @@ const LOCK_STUB_DP: f32 = 0.9;
 const KEYHOLE_R_DP: f32 = 1.0;
 const KEYHOLE_SLOT_DP: (f32, f32) = (0.9, 1.9);
 
-/// The data partition's lock in `ink`, shut, or `open` with its shackle
-/// risen and its right leg out of the body, ending at `right` with the
-/// shut lock on the bar's middle `cy`: its own canvas, where it goes, and
-/// how wide it is.
 fn lock_mark(t: &Theme, open: bool, right: f32, cy: f32, ink: Rgba) -> (Canvas, i32, i32, f32) {
     let m = &t.m;
     let (w, h, bh, sw) = (m.dp(LOCK_BODY_W_DP), m.dp(LOCK_MARK_H_DP), m.dp(LOCK_BODY_H_DP), m.dp(LOCK_STROKE_DP));
-    // The canvas has room for the shackle risen, shut or not.
+
     let top = cy - h / 2.0;
     let (ox, oy) = ((right - w - 1.0).floor(), (top - m.dp(LOCK_RISE_DP) - 1.0).floor());
     let (cw, ch) = ((right - ox + 1.0).ceil() as u32, (top + h - oy + 1.0).ceil() as u32);
     let (x, top) = (right - w - ox, top - oy);
     let (mid, body) = (x + w / 2.0, top + h - bh);
-    // The arc through the shackle's middle, and where it centres.
+
     let r = (m.dp(LOCK_SHACKLE_W_DP) - sw) / 2.0;
     let crown = top + sw / 2.0 + r - if open { m.dp(LOCK_RISE_DP) } else { 0.0 };
     let white = Rgba::rgb(255, 255, 255);
@@ -405,12 +340,6 @@ fn lock_mark(t: &Theme, open: bool, right: f32, cy: f32, ink: Rgba) -> (Canvas, 
     (knock_out(&shape, &hole, ink), ox as i32, oy as i32, w)
 }
 
-// The network's marks in the status bar, as the stock one draws them, in
-// dp: the arrows' middle in from what is right of them, and the fan's point
-// left of the arrows and below the bar's middle; the fan's slice and its
-// inner and outer arc's edges from its point, either side of straight up;
-// and the arrows' tips and bases from the fan's point, either half of their
-// width, and how round their tips and other corners are.
 const ARROWS_IN_DP: f32 = 5.57;
 const FAN_LEFT_OF_ARROWS_DP: f32 = 7.0;
 const FAN_POINT_DP: f32 = 6.06;
@@ -423,15 +352,12 @@ const ARROW_DOWN_DP: (f32, f32) = (-2.09, 0.58);
 const ARROW_HALF_DP: f32 = 1.83;
 const ARROW_ROUND_DP: (f32, f32) = (0.63, 0.33);
 
-/// The network joined, left of `right` and on the bar's middle `cy`: the
-/// fan, its arcs lit as far as the signal reaches, and the arrows out and
-/// in, each lit while data goes that way. Returns where it starts.
 fn wlan_mark(c: &mut Canvas, t: &Theme, w: &WlanMark, right: f32, cy: f32, ink: Rgba) -> f32 {
     let m = &t.m;
     let dim = t.pal.battery.empty;
     let ax = right - m.dp(ARROWS_IN_DP);
     let (fx, point) = (ax - m.dp(FAN_LEFT_OF_ARROWS_DP), cy + m.dp(FAN_POINT_DP));
-    // The slice is lit whenever a network is joined.
+
     c.fill_sector(fx, point, 0.0, m.dp(FAN_SLICE_DP), FAN_HALF, ink);
     for (arc, from) in [(FAN_INNER_DP, 2), (FAN_OUTER_DP, 3)] {
         c.fill_sector(fx, point, m.dp(arc.0), m.dp(arc.1), FAN_HALF, if w.level >= from { ink } else { dim });
@@ -447,11 +373,9 @@ fn wlan_mark(c: &mut Canvas, t: &Theme, w: &WlanMark, right: f32, cy: f32, ink: 
     fx - m.dp(FAN_OUTER_DP.1) * FAN_HALF.sin()
 }
 
-/// A triangle with each corner rounded to its own radius in `radii`.
 fn round_triangle(c: &mut Canvas, corners: [(f32, f32); 3], radii: [f32; 3], color: Rgba) {
     let centre = ((corners[0].0 + corners[1].0 + corners[2].0) / 3.0, (corners[0].1 + corners[1].1 + corners[2].1) / 3.0);
-    // The normal of the edge from `p` to `q` that points away from the
-    // middle.
+
     let outward = |p: (f32, f32), q: (f32, f32)| {
         let (ex, ey) = (q.0 - p.0, q.1 - p.1);
         let len = ex.hypot(ey);
@@ -467,7 +391,7 @@ fn round_triangle(c: &mut Canvas, corners: [(f32, f32); 3], radii: [f32; 3], col
     for (i, r) in radii.into_iter().enumerate() {
         let (p, v, q) = (corners[(i + 2) % 3], corners[i], corners[(i + 1) % 3]);
         let (a, b) = (outward(p, v), outward(v, q));
-        // The corner's circle sits `r` in from both its edges.
+
         let (sx, sy) = (a.0 + b.0, a.1 + b.1);
         let k = 2.0 * r / (sx * sx + sy * sy);
         let (ox, oy) = (v.0 - sx * k, v.1 - sy * k);
@@ -481,22 +405,15 @@ fn round_triangle(c: &mut Canvas, corners: [(f32, f32); 3], radii: [f32; 3], col
     c.fill_convex(&outline, color);
 }
 
-// How fast data goes, as the stock status bar writes it, in dp: the size
-// of its figures and of their unit, and their baselines from the bar's
-// middle.
 const SPEED_PX_DP: f32 = 6.9;
 const SPEED_UNIT_PX_DP: f32 = 6.23;
 const SPEED_BASES_DP: (f32, f32) = (-2.03, 5.97);
 
-/// Figures over their unit, as the stock bar tells how fast data goes: the
-/// two lines centred on one another and ending at `right`. Returns where
-/// they start.
 #[allow(clippy::too_many_arguments)]
 fn speed(c: &mut Canvas, t: &Theme, f: &Fonts, figures: &str, unit: &str, right: f32, cy: f32, ink: Rgba) -> f32 {
     let m = &t.m;
     let (px, unit_px) = (m.dp(SPEED_PX_DP), m.dp(SPEED_UNIT_PX_DP));
-    // Each line placed by its ink, the room between marks being the room
-    // between their ink.
+
     let (a, b) = (f.speed.ink_span(figures, px), f.speed.ink_span(unit, unit_px));
     let wide = (a.1 - a.0).max(b.1 - b.0);
     let mid = right - wide / 2.0;
@@ -505,27 +422,19 @@ fn speed(c: &mut Canvas, t: &Theme, f: &Fonts, figures: &str, unit: &str, right:
     right - wide
 }
 
-/// The stock bar's box for the bolt, as wide as the bolt's drawing and as
-/// tall as the bar's icons' boxes.
 const BOLT_W_DP: f32 = 8.0;
 const BOLT_H_DP: f32 = 20.0;
 const BATTERY_W_DP: f32 = 21.75;
 const BATTERY_CAP_DP: f32 = 1.3;
 
-/// A piece of an outline from where the last one ended: a line to a point,
-/// or a cubic through two control points to one.
 #[derive(Clone, Copy)]
 enum Piece {
     Line(f32, f32),
     Cubic(f32, f32, f32, f32, f32, f32),
 }
 
-/// A closed contour: where it starts, and its pieces round back to there.
 type Contour = ((f32, f32), &'static [Piece]);
 
-/// The stock bar's bolts as its SystemUI draws them past the battery, in
-/// their box a unit a dp: one step while charging, and two while a charger
-/// charges quickly.
 const BOLT: Contour = (
     (4.923, 4.722),
     &[
@@ -581,16 +490,13 @@ const QUICK_BOLT: Contour = (
     ],
 );
 
-/// The stock bar's bolt of `kind` in its box from `x`, on the bar's middle
-/// `cy`: as its own canvas in the bolt's ink, and where it goes.
 fn bolt(t: &Theme, kind: Bolt, x: f32, cy: f32) -> (Canvas, i32, i32) {
     let m = &t.m;
     let (start, pieces) = match kind {
         Bolt::Charging => BOLT,
         Bolt::Quick => QUICK_BOLT,
     };
-    // The box's corner on whole pixels, as the stock bar lays its views
-    // out, and the canvas over the box.
+
     let (ox, oy) = (x.round(), (cy - m.dp(BOLT_H_DP) / 2.0).round());
     let (w, h) = (m.dp(BOLT_W_DP).ceil() as u32, m.dp(BOLT_H_DP).ceil() as u32);
     let at = |(u, v): (f32, f32)| ab_glyph_rasterizer::point(m.dp(u), m.dp(v));
@@ -619,9 +525,6 @@ fn bolt(t: &Theme, kind: Bolt, x: f32, cy: f32) -> (Canvas, i32, i32) {
     (art, ox as i32, oy as i32)
 }
 
-/// The battery ending at `right`, centred on `cy`, as its own canvas and
-/// where it goes: body and cap, the level's share filled from the left, the
-/// digits in white over a charging or low fill and cut out of any other.
 fn battery(t: &Theme, f: &Fonts, level: u8, plugged: bool, right: f32, cy: f32) -> (Canvas, i32, i32) {
     let m = &t.m;
     let ink = t.pal.battery;
@@ -630,15 +533,14 @@ fn battery(t: &Theme, f: &Fonts, level: u8, plugged: bool, right: f32, cy: f32) 
     let (ox, oy) = ((left - 1.0).floor(), (cy - bh / 2.0 - 1.0).floor());
     let (w, h) = ((right - ox + 1.0).ceil() as u32, (cy + bh / 2.0 - oy + 1.0).ceil() as u32);
     let (x, top, mid) = (left - ox, cy - bh / 2.0 - oy, cy - oy);
-    // Coverage of the body with its cap, and of the digits.
+
     let white = Rgba::rgb(255, 255, 255);
     let mut shape = Canvas::new(w, h);
     shape.fill_round_rect(x, top, bw, bh, m.dp(3.7), white);
     shape.fill_round_rect(x + bw - cap_w, mid - cap_h / 2.0, cap_w * 2.0, cap_h, cap_w, white);
     let mut digits = Canvas::new(w, h);
     digits.text_center(&f.strong, &level.to_string(), x + bw / 2.0, mid, m.dp(9.7), white);
-    // The level fills its share of the whole width, the cap's included, so
-    // a full battery fills the cap too.
+
     let edge = x + (bw + cap_w) * level as f32 / 100.0;
     let low = !plugged && level < LOW_BATTERY;
     let fill = if plugged {
@@ -668,12 +570,10 @@ fn battery(t: &Theme, f: &Fonts, level: u8, plugged: bool, right: f32, cy: f32) 
     (art, ox as i32, oy as i32)
 }
 
-/// The `<` back control.
 pub fn back_arrow(c: &mut Canvas, t: &Theme, color: Rgba) {
     arrow_at(c, t, 0.0, 0.0, color);
 }
 
-/// The `<` moved by (`dx`, `dy`).
 fn arrow_at(c: &mut Canvas, t: &Theme, dx: f32, dy: f32, color: Rgba) {
     let m = &t.m;
     let (x, cy, w, h, sw) = (m.back_x + dx, m.back_cy + dy, m.back_w, m.back_h, m.back_stroke);
@@ -682,23 +582,16 @@ fn arrow_at(c: &mut Canvas, t: &Theme, dx: f32, dy: f32, color: Rgba) {
     c.line(tip, cy, end, cy + h / 2.0 - sw / 2.0, sw, color);
 }
 
-/// The area that answers a tap on the `<` control.
 pub fn back_rect(t: &Theme) -> Rect {
     let m = &t.m;
     Rect::new(0.0, m.back_cy - m.dp(28.0), m.back_x + m.back_w + m.dp(24.0), m.dp(56.0))
 }
 
-/// How deep the back cue bulges for a finger `travel` pixels in from the
-/// edge: about 0.31 of the travel at first, flattening out at 42 dp.
 pub fn back_cue_depth(t: &Theme, travel: f32) -> f32 {
     let d = (travel / t.m.px_per_dp).clamp(0.0, 272.6);
     t.m.dp(0.3096 * d - 5.679e-4 * d * d)
 }
 
-/// The back cue swelling from a screen edge while a finger swipes in from
-/// it: a dark wave `depth` pixels deep at its crest around `cy`, edged in
-/// light blue, holding a white `<` once lifting there would go back. The
-/// `<` points back on either edge.
 pub fn back_cue(c: &mut Canvas, t: &Theme, from_left: bool, cy: f32, depth: f32, arrow: bool) {
     const FILL: Rgba = Rgba::rgb(48, 48, 48);
     const RIM: Rgba = Rgba::rgb(117, 170, 246);
@@ -706,9 +599,7 @@ pub fn back_cue(c: &mut Canvas, t: &Theme, from_left: bool, cy: f32, depth: f32,
     if depth <= 0.0 {
         return;
     }
-    // A Gaussian bell narrowed to nothing past 93 dp from its crest; the
-    // rim hugs it and runs on along the edge as a thin line a little
-    // further.
+
     let sigma = m.dp(60.7);
     let rim = m.dp(0.77);
     let taper = |dy: f32, from: f32| {
@@ -741,31 +632,32 @@ pub fn back_cue(c: &mut Canvas, t: &Theme, from_left: bool, cy: f32, depth: f32,
     }
 }
 
-/// Room left around title ink for it to blur into.
 fn blur_room(t: &Theme) -> f32 {
     t.m.dp(14.0)
 }
 
-/// The large title a page opens with, as ink that fades and blurs away
-/// while the page scrolls; it sits where the page starts and scrolls with
-/// it.
 pub fn big_title(t: &Theme, f: &Fonts, title: &str) -> Sprite {
     let m = &t.m;
     let pad = blur_room(t);
-    let w = Canvas::new(0, 0).text_width(&f.title, title, m.title_px);
-    let (x, y) = (m.title_x - pad, m.title_top - pad);
-    let size = ((w + pad * 2.0).ceil() as u32, (m.title_px * 1.4 + pad * 2.0).ceil() as u32);
+    let c0 = Canvas::new(0, 0);
+    let room = m.w as f32 - m.title_x * 2.0;
+    let px = fitted_px(&c0, &f.title, title, m.title_px, m.dp(18.0), room);
+    let w = c0.text_width(&f.title, title, px);
+    let dy_fit = (m.title_px - px) * 0.5;
+    let (x, y) = (m.title_x - pad, m.title_top + dy_fit - pad);
+    let size = ((w + pad * 2.0).ceil() as u32, (px * 1.4 + pad * 2.0).ceil() as u32);
     Sprite::capture(x, y, size.0, size.1, |c, dx, dy| {
-        c.text_top(&f.title, title, m.title_x + dx, m.title_top + dy, m.title_px, Rgba::rgb(0, 0, 0), None);
+        c.text_top(&f.title, title, m.title_x + dx, m.title_top + dy_fit + dy, px, Rgba::rgb(0, 0, 0), None);
     })
 }
 
-/// The page title centred in the bar over a scrolled page, as ink that
-/// fades and sharpens in.
 pub fn small_title(t: &Theme, f: &Fonts, title: &str) -> Sprite {
     let m = &t.m;
-    let (px, pad) = (m.account_title_px, blur_room(t));
-    let w = Canvas::new(0, 0).text_width(&f.heading, title, px);
+    let pad = blur_room(t);
+    let c0 = Canvas::new(0, 0);
+    let room = m.w as f32 - m.dp(120.0);
+    let px = fitted_px(&c0, &f.heading, title, m.account_title_px, m.dp(12.5), room);
+    let w = c0.text_width(&f.heading, title, px);
     let h = px * 1.5;
     let (x, y) = ((m.w as f32 - w) / 2.0 - pad, m.back_cy - h / 2.0 - pad);
     Sprite::capture(x, y, (w + pad * 2.0).ceil() as u32, (h + pad * 2.0).ceil() as u32, |c, dx, dy| {
@@ -773,13 +665,10 @@ pub fn small_title(t: &Theme, f: &Fonts, title: &str) -> Sprite {
     })
 }
 
-/// Where the bar over a scrolled page ends: the status bar and the 56 dp
-/// title bar under it.
 pub fn bar_bottom(t: &Theme) -> f32 {
     t.m.back_cy + t.m.dp(28.0)
 }
 
-/// Strength of the bar's mask from its top (0) to 20 dp below the bar (1).
 pub const BAR_MASK: [(f32, f32); 17] = [
     (0.0, 0.98),
     (0.5, 0.98),
@@ -800,37 +689,24 @@ pub const BAR_MASK: [(f32, f32); 17] = [
     (1.0, 0.0),
 ];
 
-/// The About page's mask, solid at its top.
 pub const ABOUT_BAR_MASK: [(f32, f32); 5] = [(0.0, 1.0), (0.52, 0.98), (0.74, 0.8), (0.85, 0.5), (1.0, 0.0)];
 
-/// The mask over the top of a scrolled page: `color`, nearly solid behind
-/// the status bar and title, thinning out by 20 dp below them, with an
-/// ordered dither against banding. `level` brings it in and out.
 pub fn bar_mask(c: &mut Canvas, t: &Theme, stops: &[(f32, f32)], color: Rgba, level: f32) {
     mask(c, bar_bottom(t) + t.m.dp(20.0), stops, color, level, 0..0);
 }
 
-/// How far below a pinned strip the list thins out from under the mask, as
-/// the stock file manager's does.
 const STRIP_FADE_DP: f32 = 40.0;
 
-/// The mask over a scrolled page with an opaque strip from `top` to
-/// `bottom` held under the bar: as solid as the bar's own down to the strip,
-/// then thinning out below it the way the bar's mask does. The strip's own
-/// rows are left to it.
 pub fn strip_mask(c: &mut Canvas, t: &Theme, color: Rgba, level: f32, top: f32, bottom: f32) {
     let h = bottom + t.m.dp(STRIP_FADE_DP);
     let s = bottom / h;
-    // The bar mask from where it starts to thin, stretched over the fade.
+
     let (solid, _) = BAR_MASK.iter().rev().find(|&&(_, a)| a == BAR_MASK[0].1).expect("the bar mask starts solid");
     let mut stops = vec![(0.0, BAR_MASK[0].1)];
     stops.extend(BAR_MASK.iter().filter(|&&(p, _)| p >= *solid).map(|&(p, a)| (s + (p - solid) / (1.0 - solid) * (1.0 - s), a)));
     mask(c, h, &stops, color, level, top.max(0.0) as u32..bottom.max(0.0) as u32);
 }
 
-/// `color` over the top `h` pixels at the strength `stops` give from top (0)
-/// to bottom (1), with an ordered dither against banding; the rows in `skip`
-/// are left as they are.
 fn mask(c: &mut Canvas, h: f32, stops: &[(f32, f32)], color: Rgba, level: f32, skip: std::ops::Range<u32>) {
     const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
     assert!(c.whole(), "the mask lies over a whole screen");
@@ -842,14 +718,12 @@ fn mask(c: &mut Canvas, h: f32, stops: &[(f32, f32)], color: Rgba, level: f32, s
         if a <= 0.0 {
             continue;
         }
-        // The dither shifts the opacity by under half a step, in a 4×4
-        // pattern. Opacities run 0 to 256 so a shift divides by them.
+
         let k: [u32; 4] = std::array::from_fn(|i| {
             let k = (a + BAYER[y as usize % 4][i] as f32 / 16.0 - 0.5).clamp(0.0, 255.0).round() as u32;
             k + (k >> 7)
         });
-        // Each pixel as a word, its red and blue mixed towards the ink in
-        // one multiply, then its green; its alpha kept.
+
         let lit: [(u32, u32, u32); 4] = k.map(|k| ((ink[0] | ink[2] << 16) * k + 0x0080_0080, ink[1] * k + 0x80, 256 - k));
         let start = y as usize * row_len;
         for quad in c.data[start..start + row_len].as_chunks_mut::<16>().0 {
@@ -863,7 +737,6 @@ fn mask(c: &mut Canvas, h: f32, stops: &[(f32, f32)], color: Rgba, level: f32, s
     }
 }
 
-/// The piecewise-linear value of `stops` at `f`.
 fn ramp(stops: &[(f32, f32)], f: f32) -> f32 {
     let (first, last) = (stops[0], stops[stops.len() - 1]);
     if f <= first.0 {
@@ -877,20 +750,15 @@ fn ramp(stops: &[(f32, f32)], f: f32) -> f32 {
     a0 + (a1 - a0) * (f - p0) / (p1 - p0)
 }
 
-/// The centre and radius of the round chip behind `<`.
 pub fn back_disc(t: &Theme) -> (f32, f32, f32) {
     let m = &t.m;
     (m.back_x + m.back_w / 2.0 + m.dp(1.55), m.back_cy, m.dp(21.7))
 }
 
-/// The round chip behind `<` while the bar shows: a pale disc with a
-/// bright rim and a faint shadow. Drawn once per theme on its own canvas,
-/// returned with where that canvas's top-left corner goes.
 pub fn back_chip(t: &Theme) -> (Canvas, i32, i32) {
     chip(t, back_disc(t))
 }
 
-/// Such a chip about the disc centred at (`cx`, `cy`) of radius `r`.
 fn chip(t: &Theme, (cx, cy, r): (f32, f32, f32)) -> (Canvas, i32, i32) {
     let m = &t.m;
     let (fill, rim) = if t.dark { (Rgba::rgb(38, 38, 38), Rgba::rgb(62, 62, 62)) } else { (Rgba::rgb(248, 248, 248), Rgba::rgb(255, 255, 255)) };
@@ -915,10 +783,10 @@ fn chip(t: &Theme, (cx, cy, r): (f32, f32, f32)) -> (Canvas, i32, i32) {
     (c, x0, y0)
 }
 
-/// A short message in a dark capsule above the bottom edge.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &Fonts, text: &str) {
     let m = &t.m;
-    let px = m.sub_px;
+    let max_text_w = m.w as f32 - m.margin * 2.0 - m.dp(40.0);
+    let px = fitted_px(c, &f.heading, text, m.sub_px, m.dp(11.0), max_text_w);
     let w = c.text_width(&f.heading, text, px) + m.dp(40.0);
     let h = m.dp(44.0);
     let (x, y) = ((m.w as f32 - w) / 2.0, m.h as f32 - m.dp(120.0));
@@ -926,16 +794,11 @@ pub fn toast(c: &mut Canvas, t: &Theme, f: &Fonts, text: &str) {
     c.text_center(&f.heading, text, m.w as f32 / 2.0, y + h / 2.0, px, Rgba::rgb(255, 255, 255));
 }
 
-/// The home page's search bar in `r`, at `level` of its strength, without
-/// its icon and words: those are laid over it from [`search_words`].
 pub fn search_bar(c: &mut Canvas, t: &Theme, r: Rect, level: f32) {
     let ink = t.pal.search;
     c.fill_round_rect(r.x, r.y, r.w, r.h, r.h / 2.0, ink.with_alpha((ink.a as f32 * level).round() as u8));
 }
 
-/// The icon and words of the home page's search bar standing at `bar`, on
-/// their own to lay over it, the layer's top-left corner at `bar`'s taken
-/// down to whole pixels.
 pub fn search_words(t: &Theme, f: &Fonts, bar: Rect, placeholder: &str) -> Canvas {
     let m = &t.m;
     let (left, top) = (bar.x.floor(), bar.y.floor());
@@ -946,43 +809,34 @@ pub fn search_words(t: &Theme, f: &Fonts, bar: Rect, placeholder: &str) -> Canva
     c.stroke_circle(icx, icy, ring, sw, t.pal.search_icon);
     let k = ring * std::f32::consts::FRAC_1_SQRT_2;
     c.line(icx + k, icy + k, icx + m.dp(9.9), icy + m.dp(10.0), sw, t.pal.search_icon);
-    // The placeholder is set at the row-title size and weight, in grey.
-    c.text_vc(&f.heading, placeholder, x + m.search_text_inset, cy, m.row_title_px, t.pal.placeholder, None);
+    let room = bar.w - m.search_text_inset - m.dp(16.0);
+    let px = fitted_px(&c, &f.heading, placeholder, m.row_title_px, m.dp(12.0), room);
+    c.text_vc(&f.heading, placeholder, x + m.search_text_inset, cy, px, t.pal.placeholder, None);
     c
 }
 
-/// What a search field shows and where its parts landed.
 pub struct SearchField {
     pub field: Rect,
-    /// The clear button, while there is text to clear.
+
     pub clear: Option<Rect>,
     pub caret: Caret,
 }
 
-/// A text field's cursor: the stretch of the field it stands in, drawn
-/// again with it, and where that stretch goes. The field itself is drawn
-/// without it, so the cursor blinks as this is laid over the field or not.
 pub struct Caret {
     pub art: Canvas,
     pub x: i32,
     pub y: i32,
 }
 
-/// How wide a text cursor is and how round its ends are, in dp.
 const CARET_W_DP: f32 = 2.0;
 const CARET_RADIUS_DP: f32 = 0.35;
 
-/// The search page, as the stock one lays it out: how far down its field
-/// stands, and the round button beside it that leaves the search, its
-/// distance from the screen's edge and from the field, and its cross.
 const SEARCH_TOP_DP: f32 = 51.7;
 const CANCEL_RIGHT_DP: f32 = 14.0;
 const CANCEL_GAP_DP: f32 = 10.0;
 const CANCEL_ARM_DP: f32 = 8.0;
 const CANCEL_STROKE_DP: f32 = 1.8;
 
-/// Where the search page puts its field and the button that leaves the
-/// search.
 pub fn search_layout(t: &Theme) -> (Rect, Rect) {
     let m = &t.m;
     let (top, d) = (m.dp(SEARCH_TOP_DP), m.search_h);
@@ -990,21 +844,14 @@ pub fn search_layout(t: &Theme) -> (Rect, Rect) {
     (Rect::new(m.margin, top, cancel.x - m.dp(CANCEL_GAP_DP) - m.margin, d), cancel)
 }
 
-/// The round button that leaves the search, in `r`.
 pub fn cancel_button(c: &mut Canvas, t: &Theme, r: Rect) {
     draw_disc(c, r, t.pal.search);
     draw_cross(c, t, r, t.pal.text);
 }
 
-/// How strongly `<` and the cross of the search page's round button show
-/// while held down, sampled from the stock settings: black at 61% and at
-/// 66% in the light theme.
 const BACK_HELD_ALPHA: u8 = 156;
 const CANCEL_HELD_ALPHA: u8 = 168;
 
-/// The `<` held down: a disc darkening what is behind it, and the `<`
-/// lighter on it. The see-through `<` is inked once where its strokes
-/// meet, as one shape.
 pub fn back_held(c: &mut Canvas, t: &Theme) {
     let (cx, cy, r) = back_disc(t);
     c.fill_circle(cx, cy, r, t.pal.button_press);
@@ -1013,40 +860,32 @@ pub fn back_held(c: &mut Canvas, t: &Theme) {
     arrow.draw(c, 0.0, 0.0, t.pal.text, BACK_HELD_ALPHA as f32 / 255.0);
 }
 
-/// What the round button at the right end of the bar shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
-    /// A prompt and a cursor: a terminal.
+
     Terminal,
-    /// A tick: keep what was done.
+
     Done,
 }
 
-/// The centre and radius of the round button at the right end of the bar,
-/// the `<` chip mirrored.
 pub fn button_disc(t: &Theme) -> (f32, f32, f32) {
     let (cx, cy, r) = back_disc(t);
     (t.m.w as f32 - cx, cy, r)
 }
 
-/// The area that answers a tap on that button, the `<` control's mirrored.
 pub fn button_rect(t: &Theme) -> Rect {
     let b = back_rect(t);
     Rect::new(t.m.w as f32 - b.x - b.w, b.y, b.w, b.h)
 }
 
-/// The chip behind that button, as the one behind `<`.
 pub fn button_chip(t: &Theme) -> (Canvas, i32, i32) {
     chip(t, button_disc(t))
 }
 
-/// The button's glyph, in strokes as heavy as the `<`'s.
 pub fn button_glyph(c: &mut Canvas, t: &Theme, glyph: Glyph, color: Rgba) {
     glyph_at(c, t, glyph, 0.0, 0.0, color);
 }
 
-/// The glyph moved by (`dx`, `dy`), its strokes spanning the same box about
-/// the disc's centre either way.
 fn glyph_at(c: &mut Canvas, t: &Theme, glyph: Glyph, dx: f32, dy: f32, color: Rgba) {
     let m = &t.m;
     let (cx, cy, _) = button_disc(t);
@@ -1066,8 +905,6 @@ fn glyph_at(c: &mut Canvas, t: &Theme, glyph: Glyph, dx: f32, dy: f32, color: Rg
     }
 }
 
-/// That button held down, as `<` is: its disc darkening what is behind it,
-/// and its glyph lighter on it, inked once where its strokes meet.
 pub fn button_held(c: &mut Canvas, t: &Theme, glyph: Glyph) {
     let (cx, cy, r) = button_disc(t);
     c.fill_circle(cx, cy, r, t.pal.button_press);
@@ -1076,8 +913,6 @@ pub fn button_held(c: &mut Canvas, t: &Theme, glyph: Glyph) {
     art.draw(c, 0.0, 0.0, t.pal.text, BACK_HELD_ALPHA as f32 / 255.0);
 }
 
-/// The round button that leaves the search held down, in `r`: its disc
-/// darker and its cross lighter, inked once where its strokes cross.
 pub fn cancel_held(c: &mut Canvas, t: &Theme, r: Rect) {
     draw_disc(c, r, over(t.pal.button_press, t.pal.search));
     let cross = Sprite::capture(r.x, r.y, r.w.ceil() as u32 + 1, r.h.ceil() as u32 + 1, |c, dx, dy| {
@@ -1086,8 +921,6 @@ pub fn cancel_held(c: &mut Canvas, t: &Theme, r: Rect) {
     cross.draw(c, 0.0, 0.0, t.pal.text, CANCEL_HELD_ALPHA as f32 / 255.0);
 }
 
-/// The home page's search bar held down, in `r`: darker, its words and
-/// icon with it.
 pub fn search_bar_held(c: &mut Canvas, t: &Theme, r: Rect) {
     c.fill_round_rect(r.x, r.y, r.w, r.h, r.h / 2.0, t.pal.button_press);
 }
@@ -1104,9 +937,6 @@ fn draw_cross(c: &mut Canvas, t: &Theme, r: Rect, color: Rgba) {
     c.line(cx - arm, cy + arm, cx + arm, cy - arm, stroke, color);
 }
 
-/// The button that leaves the search, where the search page puts it, as
-/// ink that fades and blurs in and out: its disc and its cross, to lay in
-/// their colours.
 pub fn cancel_art(t: &Theme) -> (Sprite, Sprite) {
     let (_, r) = search_layout(t);
     let pad = blur_room(t);
@@ -1117,15 +947,10 @@ pub fn cancel_art(t: &Theme) -> (Sprite, Sprite) {
     (disc, cross)
 }
 
-/// The search field with nothing typed in it, filling `r`: the home page's
-/// bar as it moves to where the search page has its field.
 pub fn search_capsule(c: &mut Canvas, t: &Theme, f: &Fonts, r: Rect, placeholder: &str) {
     draw_search_field(c, t, f, r.x, r.w, r.y + r.h / 2.0, "", placeholder, false);
 }
 
-/// The search bar opened for typing, from `x` across `w` and centred on
-/// `cy`: the text typed so far, or the placeholder, a button that clears
-/// the text, and the cursor where the typing goes.
 #[allow(clippy::too_many_arguments)]
 pub fn search_field(c: &mut Canvas, t: &Theme, f: &Fonts, x: f32, w: f32, cy: f32, text: &str, placeholder: &str) -> SearchField {
     let (field, clear, at) = draw_search_field(c, t, f, x, w, cy, text, placeholder, false);
@@ -1135,8 +960,6 @@ pub fn search_field(c: &mut Canvas, t: &Theme, f: &Fonts, x: f32, w: f32, cy: f3
     SearchField { field, clear, caret }
 }
 
-/// Draw the search field, with its cursor if `caret`; returns where the
-/// field, its clear button and the cursor are.
 #[allow(clippy::too_many_arguments)]
 fn draw_search_field(
     c: &mut Canvas,
@@ -1162,20 +985,21 @@ fn draw_search_field(
     let clear_d = m.dp(18.0);
     let room = w - m.search_text_inset - clear_d - m.dp(24.0);
     let px = m.row_title_px;
-    // A long query shows its end, where the typing is.
+
     let mut shown = text;
     while c.text_width(&f.heading, shown, px) > room {
         let mut chars = shown.chars();
         chars.next();
         shown = chars.as_str();
     }
-    // The text goes over the cursor, as the stock field draws them.
+
     let at = cursor(t, f, tx + c.text_width(&f.heading, shown, px), cy, px);
     if caret {
         c.fill_round_rect(at.x, at.y, at.w, at.h, m.dp(CARET_RADIUS_DP), t.pal.accent);
     }
     if text.is_empty() {
-        c.text_vc(&f.heading, placeholder, tx, cy, px, t.pal.placeholder, None);
+        let ph_px = fitted_px(c, &f.heading, placeholder, px, m.dp(12.0), w - m.search_text_inset - m.dp(16.0));
+        c.text_vc(&f.heading, placeholder, tx, cy, ph_px, t.pal.placeholder, None);
     } else {
         c.text_vc(&f.heading, shown, tx, cy, px, t.pal.text, None);
     }
@@ -1190,9 +1014,6 @@ fn draw_search_field(
     (Rect::new(x, y, w, h), clear, at)
 }
 
-/// Where a cursor stands, with its left edge on `x`, in text of `px`
-/// whose ink is centred on `cy`: as tall as the face's line, from its
-/// ascent to its descent, as the stock text fields draw it.
 fn cursor(t: &Theme, f: &Fonts, x: f32, cy: f32, px: f32) -> Rect {
     let (ink_top, ink_bottom) = f.heading.ink(px);
     let base = cy - (ink_top + ink_bottom) / 2.0;
@@ -1200,19 +1021,14 @@ fn cursor(t: &Theme, f: &Fonts, x: f32, cy: f32, px: f32) -> Rect {
     Rect::new(x, base + top, t.m.dp(CARET_W_DP), bottom - top)
 }
 
-/// A text cursor with its left edge on `x`, from `top` to `bottom`.
 pub fn caret_rect(t: &Theme, x: f32, top: f32, bottom: f32) -> Rect {
     Rect::new(x, top, t.m.dp(CARET_W_DP), bottom - top)
 }
 
-/// Draw a text cursor in `at`.
 pub fn draw_caret(c: &mut Canvas, t: &Theme, at: Rect) {
     c.fill_round_rect(at.x, at.y, at.w, at.h, t.m.dp(CARET_RADIUS_DP), t.pal.accent);
 }
 
-/// The stretch of a field round the cursor at `at`, drawn by `draw` into a
-/// canvas of its own; `draw` gets how far that canvas's corner is from
-/// the field's.
 pub fn caret_over(at: Rect, draw: impl FnOnce(&mut Canvas, f32, f32)) -> Caret {
     let (x, y) = (at.x.floor() as i32 - 1, at.y.floor() as i32 - 1);
     let mut art = Canvas::new(at.w.ceil() as u32 + 3, at.h.ceil() as u32 + 3);
@@ -1220,8 +1036,6 @@ pub fn caret_over(at: Rect, draw: impl FnOnce(&mut Canvas, f32, f32)) -> Caret {
     Caret { art, x, y }
 }
 
-/// Section caption between two cards. `prev_bottom` is the bottom of the card
-/// above (or the content top for the first section). Returns the next card top.
 pub fn section(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, label: &str) -> f32 {
     let m = &t.m;
     let ink_top = prev_bottom + m.section_label_top;
@@ -1229,13 +1043,11 @@ pub fn section(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, label: &s
     prev_bottom + m.section_block
 }
 
-/// First section on a page, directly under the content top.
 pub fn section_first(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str) -> f32 {
     let m = &t.m;
     section(c, t, f, top - m.section_label_top + m.dp(2.0), label)
 }
 
-/// Grey explanatory text below a card, wrapped to the content width.
 pub fn footnote(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f32 {
     let m = &t.m;
     let x = m.title_x + m.dp(0.9);
@@ -1249,9 +1061,6 @@ pub fn footnote(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f32
     top
 }
 
-/// Body text set on the page itself, as a licence or notice reads,
-/// wrapped to the content width; a blank line starts a new paragraph.
-/// Returns where the text ends.
 pub fn paragraph(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f32 {
     let m = &t.m;
     let x = m.title_x + m.dp(0.9);
@@ -1270,10 +1079,6 @@ pub fn paragraph(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f3
     top
 }
 
-/// A bar held at the bottom of the screen on the page colour `bg`, with
-/// buttons side by side, the last in the accent colour, and room under
-/// them for the gesture area. Returns the bar and where each button is on
-/// it.
 pub fn dock_bar(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str]) -> (Canvas, Vec<Rect>) {
     let m = &t.m;
     let (h, pad, gap) = (m.dp(48.0), m.dp(12.0), m.dp(12.0));
@@ -1292,9 +1097,6 @@ pub fn dock_bar(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str]) -> (Canvas, Vec
     (c, rects)
 }
 
-/// A card holding text being typed, with the cursor after it; text too long
-/// for the card shows its end, where the cursor is. Returns where the card
-/// ends, and the cursor.
 pub fn text_field(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) -> (f32, Caret) {
     let at = draw_text_field(c, t, f, t.m.margin, top, text, false);
     let caret = caret_over(at, |art, dx, dy| {
@@ -1303,8 +1105,6 @@ pub fn text_field(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) ->
     (top + t.m.dp(56.0), caret)
 }
 
-/// Draw the text field's card from `x0`, `top`, with its cursor if
-/// `caret`; returns where the cursor is.
 fn draw_text_field(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, text: &str, caret: bool) -> Rect {
     let m = &t.m;
     let (w, h) = (m.w as f32 - m.margin * 2.0, m.dp(56.0));
@@ -1325,8 +1125,6 @@ fn draw_text_field(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, text
     at
 }
 
-/// A full-width button in the accent colour, for a page's one action that
-/// destroys nothing. Returns its rect.
 pub fn button(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str) -> Rect {
     let m = &t.m;
     let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(48.0));
@@ -1340,27 +1138,24 @@ pub enum Trail<'a> {
     None,
     Arrow,
     Value(&'a str),
-    /// Right-aligned grey text with no chevron (read-only information).
+
     Text(&'a str),
     Switch(bool),
     Badge(&'a str),
     Check(bool),
-    /// A WLAN network's padlock, where joining it takes a password, and the
-    /// round button that opens its details.
+
     Network { locked: bool },
-    /// The value chosen, and the arrows up and down that say the row opens
-    /// a list of choices.
+
     Choice(&'a str),
 }
 
 #[derive(Clone, Copy)]
 pub struct Row<'a> {
     pub icon: Option<(Rgba, Icon)>,
-    /// A WLAN fan before the title in place of an icon, lit to this many
-    /// arcs of three.
+
     pub fan: Option<u8>,
     pub title: &'a str,
-    /// A word in an outline after the title, such as a network's bands.
+
     pub tag: Option<&'a str>,
     pub sub: Option<&'a str>,
     pub trail: Trail<'a>,
@@ -1455,19 +1250,19 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &Fonts, r: &Row, lay: &Layout, top: f3
     }
     let tx = card_x + lay.text_x;
     let color = r.tint.unwrap_or(tone.text);
-    // A tag takes its room from the title's.
     let tag_w = r.tag.map_or(0.0, |tag| c.text_width(&f.body, tag, m.dp(TAG_PX)) + m.dp(TAG_PAD * 2.0 + TAG_GAP));
     let title_room = (lay.text_max - tag_w).max(0.0);
+    let title_px = fitted_px(c, &f.heading, r.title, m.row_title_px, m.dp(13.5), title_room);
     let title_max = Some(title_room);
-    let (tt, tb) = f.heading.ink(m.row_title_px);
+    let (tt, tb) = f.heading.ink(title_px);
     let title_cy = if lay.sub_lines.is_empty() {
-        c.text_vc(&f.heading, r.title, tx, cy, m.row_title_px, color, title_max);
+        c.text_vc(&f.heading, r.title, tx, cy, title_px, color, title_max);
         cy
     } else {
         let (st, sb) = f.body.ink(m.sub_px);
         let block = (tb - tt) + m.sub_gap + (lay.sub_lines.len() as f32 - 1.0) * m.sub_pitch + (sb - st);
         let ink_top = cy - block / 2.0;
-        c.text_top(&f.heading, r.title, tx, ink_top, m.row_title_px, color, title_max);
+        c.text_top(&f.heading, r.title, tx, ink_top, title_px, color, title_max);
         let mut st_top = ink_top + (tb - tt) + m.sub_gap;
         for line in &lay.sub_lines {
             c.text_top(&f.body, line, tx, st_top, m.sub_px, tone.sub, None);
@@ -1476,7 +1271,7 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &Fonts, r: &Row, lay: &Layout, top: f3
         ink_top + (tb - tt) / 2.0
     };
     if let Some(tag) = r.tag {
-        let title_w = c.text_width(&f.heading, r.title, m.row_title_px).min(title_room);
+        let title_w = c.text_width(&f.heading, r.title, title_px).min(title_room);
         let x = tx + title_w + m.dp(TAG_GAP);
         let w = c.text_width(&f.body, tag, m.dp(TAG_PX)) + m.dp(TAG_PAD * 2.0);
         let h = m.dp(TAG_H);
@@ -1528,9 +1323,6 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &Fonts, r: &Row, lay: &Layout, top: f3
     }
 }
 
-// The arrows after the value of a row that opens a list of choices, as the
-// stock rows draw them, in dp: their right end from the card's, how wide
-// and tall each is, how far apart, their stroke, and the room before them.
 const UPDOWN_RIGHT: f32 = 16.0;
 const UPDOWN_W: f32 = 10.0;
 const UPDOWN_H: f32 = 5.67;
@@ -1538,8 +1330,6 @@ const UPDOWN_GAP: f32 = 4.0;
 const UPDOWN_STROKE: f32 = 1.6;
 const UPDOWN_VALUE_GAP: f32 = 9.0;
 
-/// The arrow up over the arrow down, their right end at `right`, the pair
-/// centred on `cy`.
 fn updown(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
     let m = &t.m;
     let (w, h, gap, sw) = (m.dp(UPDOWN_W), m.dp(UPDOWN_H), m.dp(UPDOWN_GAP), m.dp(UPDOWN_STROKE));
@@ -1552,12 +1342,6 @@ fn updown(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
     c.line(mid, down + foot, x1, down + top, sw, color);
 }
 
-// The stock list of choices opened from a row, in dp: how wide it is, how
-// far in from the row's right end and down from its top it opens, its
-// corners, the room above and below its choices, each choice's height,
-// where the words start and how big they are, the tick's centre from the
-// right edge and its stroke, and the deviation of the blur that makes its
-// shadow.
 const CHOICES_W: f32 = 286.0;
 const CHOICES_RIGHT: f32 = 16.7;
 const CHOICES_DROP: f32 = 15.0;
@@ -1570,10 +1354,6 @@ const TICK_RIGHT: f32 = 31.0;
 const TICK_STROKE: f32 = 2.0;
 const CHOICES_SHADOW: f32 = 10.7;
 
-/// A list of choices open over the page from `row`, as the stock one
-/// opens: a card lifted off the page, its choices one under another, the
-/// one `chosen` in the accent with a tick, and the one `held` darkened
-/// while a finger holds it. Returns each choice's rect.
 #[allow(clippy::too_many_arguments)]
 pub fn choices(c: &mut Canvas, t: &Theme, f: &Fonts, row: Rect, names: &[&str], chosen: Option<usize>, held: Option<usize>) -> Vec<Rect> {
     let m = &t.m;
@@ -1599,7 +1379,6 @@ pub fn choices(c: &mut Canvas, t: &Theme, f: &Fonts, row: Rect, names: &[&str], 
     rects
 }
 
-/// The tick beside the choice taken, its ink centred on (`cx`, `cy`).
 fn tick(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, color: Rgba) {
     let m = &t.m;
     let at = |dx: f32, dy: f32| (cx + m.dp(dx), cy + m.dp(dy));
@@ -1609,16 +1388,11 @@ fn tick(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, color: Rgba) {
     c.line(b.0, b.1, z.0, z.1, sw, color);
 }
 
-/// The round button at the end of a WLAN network's row `row`, which opens
-/// the network's details apart from the row.
 pub fn round_button(t: &Theme, row: Rect) -> Rect {
     let d = t.m.dp(ROUND_D);
     Rect::new(row.x + row.w - t.m.inner - d, row.y + row.h / 2.0 - d / 2.0, d, d)
 }
 
-// What a WLAN network's row holds, as the stock WLAN page lays it out, in
-// dp: the fan's centre from the card's edge and its reach, where the name
-// starts, the tag after the name, the padlock and the round button.
 const FAN_CX: f32 = 27.3;
 const FAN_R: f32 = 13.5;
 const FAN_TEXT_X: f32 = 54.7;
@@ -1637,12 +1411,10 @@ const ROUND_MARK_W: f32 = 4.0;
 const ROUND_MARK_H: f32 = 7.5;
 const ROUND_MARK_STROKE: f32 = 1.7;
 
-/// A flat settings card holding `rows`.
 pub fn list(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row]) -> Block {
     list_toned(c, t, f, top, rows, &Tone::page(t))
 }
 
-/// [`list`] in the given colours.
 pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], tone: &Tone) -> Block {
     let m = &t.m;
     let lays: Vec<Layout> = rows.iter().map(|r| layout(c, t, f, r)).collect();
@@ -1659,8 +1431,6 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
     Block { bottom: top + h, rows: rects }
 }
 
-/// Account-style card: avatar, name and detail, then optional rows. The
-/// first rect returned covers the name row.
 pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, sub: &str, rows: &[Row]) -> Block {
     let m = &t.m;
     let lays: Vec<Layout> = rows.iter().map(|r| layout(c, t, f, r)).collect();
@@ -1703,8 +1473,6 @@ pub fn switch(c: &mut Canvas, t: &Theme, right: f32, cy: f32, on: bool) {
     c.fill_circle(kx, cy, k / 2.0, Rgba::rgb(255, 255, 255));
 }
 
-/// The stock thick slider: a capsule track with the fill and a white knob
-/// that sits inside the fill's rounded end.
 pub fn slider(c: &mut Canvas, t: &Theme, x: f32, top: f32, w: f32, value: f32) {
     let m = &t.m;
     let h = m.slider_h;
@@ -1714,22 +1482,19 @@ pub fn slider(c: &mut Canvas, t: &Theme, x: f32, top: f32, w: f32, value: f32) {
     c.fill_circle(x + fw - h / 2.0, top + h / 2.0, m.slider_knob / 2.0, Rgba::rgb(255, 255, 255));
 }
 
-/// Where a slider card ends, its track, and the row under the slider.
 pub struct SliderBlock {
     pub bottom: f32,
     pub track: Rect,
     pub below: Option<Rect>,
 }
 
-/// The monochrome icon beside a slider card's caption.
 #[derive(Clone, Copy)]
 pub enum Caption {
     Sun,
-    /// A phone between the lines of its shaking.
+
     Vibrate,
 }
 
-/// Card with a monochrome icon caption, a slider, and an optional row below.
 #[allow(clippy::too_many_arguments)]
 pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Caption, label: &str, value: f32, below: Option<Row>) -> SliderBlock {
     let m = &t.m;
@@ -1768,7 +1533,7 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
             }
         }
     }
-    // The caption is set like the account name, in the softer text colour.
+
     c.text_vc(&f.heading, label, card_x + m.dp(53.7), lcy, m.account_title_px, t.pal.info, None);
     let track = Rect::new(card_x + m.inner, slider_top, right - card_x - m.inner * 2.0, m.slider_h);
     slider(c, t, track.x, track.y, track.w, value);
@@ -1781,14 +1546,13 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
     SliderBlock { bottom: top + h, track, below: below_rect }
 }
 
-/// Swipe-to-confirm control in the thick-slider style; `progress` (0 to 1)
-/// is how far the knob has been dragged. Returns the track.
 pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, danger: bool, progress: f32) -> Rect {
     let m = &t.m;
     let accent = if danger { t.pal.danger } else { t.pal.accent };
     let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(56.0));
     c.fill_round_rect(x, top, w, h, h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
-    c.text_center(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, m.row_title_px, accent);
+    let px = fitted_px(c, &f.heading, label, m.row_title_px, m.dp(12.5), w - h * 1.3);
+    c.text_center(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, px, accent);
     let k = h - m.dp(8.0);
     let kcx = x + h / 2.0 + (w - h) * progress.clamp(0.0, 1.0);
     let kcy = top + h / 2.0;
@@ -1810,8 +1574,6 @@ pub fn progress_bar(c: &mut Canvas, t: &Theme, x: f32, y: f32, w: f32, value: f3
     c.fill_round_rect(x, y, (w * value.clamp(0.0, 1.0)).max(h), h, h / 2.0, t.pal.accent);
 }
 
-/// A card for a long job: what is under way, a line on where it stands,
-/// and a bar when the share done is known. Returns the card's bottom.
 pub fn progress_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, detail: &str, done: Option<f32>) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -1826,18 +1588,18 @@ pub fn progress_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str
         None => detail_base + m.dp(24.0),
     };
     c.fill_round_rect(card_x, top, right - card_x, bottom - top, m.card_radius, t.pal.card);
-    c.text(&f.heading, title, x, title_base, m.row_title_px, t.pal.text, Some(width));
-    c.text(&f.body, detail, x, detail_base, m.sub_px, t.pal.subtitle, Some(width));
+    let title_px = fitted_px(c, &f.heading, title, m.row_title_px, m.dp(13.0), width);
+    let detail_px = fitted_px(c, &f.body, detail, m.sub_px, m.dp(11.0), width);
+    c.text(&f.heading, title, x, title_base, title_px, t.pal.text, Some(width));
+    c.text(&f.body, detail, x, detail_base, detail_px, t.pal.subtitle, Some(width));
     if let Some(v) = done {
         progress_bar(c, t, x, bar_top, width, v);
     }
     bottom
 }
 
-/// How near a finger comes to a pattern dot to join it, in dp.
 pub const PATTERN_REACH_DP: f32 = 32.0;
 
-/// Centres of the nine pattern dots, row by row.
 pub fn pattern_dots(cx: f32, cy: f32, span: f32) -> [(f32, f32); 9] {
     let step = span / 2.0;
     std::array::from_fn(|i| (cx - step + (i % 3) as f32 * step, cy - step + (i / 3) as f32 * step))
@@ -1863,15 +1625,13 @@ pub fn pattern_lock(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, span: f32, path
     }
 }
 
-/// The round keys a screen lock's code is typed on.
 const PAD_KEY_DP: f32 = 76.0;
 const PAD_GAP_X_DP: f32 = 30.0;
 const PAD_GAP_Y_DP: f32 = 18.0;
 const PAD_TOP_DP: f32 = 10.0;
-/// Room under the last row for the gesture area of the screen's edge.
+
 const PAD_BOTTOM_DP: f32 = 26.0;
 
-/// What each key of the keypad types, read as rows of three.
 const PAD_KEYS: [Cap; 12] = [
     Cap::Char('1'),
     Cap::Char('2'),
@@ -1887,14 +1647,10 @@ const PAD_KEYS: [Cap; 12] = [
     Cap::Enter,
 ];
 
-/// How tall the keypad is on this theme's screen.
 pub fn keypad_height(t: &Theme) -> f32 {
     t.m.dp(PAD_TOP_DP + 4.0 * PAD_KEY_DP + 3.0 * PAD_GAP_Y_DP + PAD_BOTTOM_DP)
 }
 
-/// The keypad a screen lock's code is typed on, its top at `top`: four rows
-/// of three round keys, `pressed` drawn held down, and the last row erasing
-/// and confirming, in `l`. Returns where each key answers a touch.
 pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: Option<Cap>) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let (size, gx, gy) = (m.dp(PAD_KEY_DP), m.dp(PAD_GAP_X_DP), m.dp(PAD_GAP_Y_DP));
@@ -1907,8 +1663,7 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
     }
     for &(r, cap) in &keys {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        // Erasing and confirming carry their own words, and sit on the
-        // page rather than on a key of their own.
+
         let bare = matches!(cap, Cap::Backspace | Cap::Enter);
         let base = match cap {
             Cap::Enter => t.pal.accent,
@@ -1921,15 +1676,21 @@ pub fn keypad(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, pressed: 
         }
         match cap {
             Cap::Char(ch) => c.text_center(&f.heading, &ch.to_string(), cx, cy, m.dp(34.0), t.pal.text),
-            Cap::Backspace => c.text_center(&f.body, l.pick(["删除", "刪除", "Delete"]), cx, cy, m.row_title_px, t.pal.accent),
-            _ => c.text_center(&f.heading, l.pick(["解密", "解密", "Decrypt"]), cx, cy, m.row_title_px, Rgba::rgb(255, 255, 255)),
+            Cap::Backspace => {
+                let s = l.pick(["删除", "刪除", "Delete"]);
+                let px = fitted_px(c, &f.body, s, m.row_title_px, m.dp(11.0), r.w - m.dp(6.0));
+                c.text_center(&f.body, s, cx, cy, px, t.pal.accent);
+            }
+            _ => {
+                let s = l.pick(["解密", "解密", "Decrypt"]);
+                let px = fitted_px(c, &f.heading, s, m.row_title_px, m.dp(10.0), r.w - m.dp(10.0));
+                c.text_center(&f.heading, s, cx, cy, px, Rgba::rgb(255, 255, 255));
+            }
         }
     }
     keys
 }
 
-/// The code typed so far, as a dot for each character. Nothing is drawn
-/// for a code not started.
 pub fn code_dots(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, typed: usize) {
     let m = &t.m;
     let pitch = m.dp(26.0);
@@ -1939,7 +1700,6 @@ pub fn code_dots(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, typed: usize) {
     }
 }
 
-/// Grey line icons of the parameters page, drawn on a 24 dp grid.
 #[derive(Clone, Copy, Debug)]
 pub enum Outline {
     Phone,
@@ -1950,21 +1710,21 @@ pub enum Outline {
     Screen,
     Storage,
     Tag,
-    /// An i in a ring: how a network stands.
+
     Info,
-    /// A WLAN fan in lines: which generation of Wi-Fi.
+
     Wifi,
-    /// A dial: how fast a link is.
+
     Speed,
-    /// Bars rising: how strong a signal is.
+
     Signal,
-    /// A shield with a keyhole: how a network is protected.
+
     Shield,
-    /// A pin: an address.
+
     Address,
-    /// A box over two: a network's mask.
+
     Mask,
-    /// A router with its antennas.
+
     Router,
 }
 
@@ -1972,12 +1732,11 @@ pub fn outline(c: &mut Canvas, t: &Theme, icon: Outline, cx: f32, cy: f32) {
     outline_in(c, t, icon, cx, cy, t.pal.outline);
 }
 
-/// [`outline`] in `col`.
 pub fn outline_in(c: &mut Canvas, t: &Theme, icon: Outline, cx: f32, cy: f32, col: Rgba) {
     let m = &t.m;
     let d = |v: f32| m.dp(v);
     let sw = d(1.7);
-    // Rounded box whose outer edge spans (x, y, w, h) in dp from the centre.
+
     let boxed = |c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32| {
         c.stroke_round_rect(cx + d(x) + sw / 2.0, cy + d(y) + sw / 2.0, d(w) - sw, d(h) - sw, d(r) - sw / 2.0, sw, col);
     };
@@ -2094,16 +1853,12 @@ pub fn outline_in(c: &mut Canvas, t: &Theme, icon: Outline, cx: f32, cy: f32, co
     }
 }
 
-/// A box of [`detail_grid`].
 pub struct Detail<'a> {
     pub icon: Outline,
     pub title: &'a str,
     pub value: String,
 }
 
-/// Two-column grid of icon, title and the value under it, as the stock
-/// network details lay them out; values keep their own line breaks and
-/// wrap to their column.
 pub fn detail_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Detail]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2130,7 +1885,8 @@ pub fn detail_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Deta
         let (x, icy) = (cols[i % 2], centres[i / 2]);
         outline_in(c, t, d.icon, x + m.dp(10.0), icy, t.pal.spec_label);
         let title_cy = icy + to_title;
-        c.text_vc(&f.heading, d.title, x, title_cy, m.row_title_px, t.pal.text, Some(widths[i % 2]));
+        let title_px = fitted_px(c, &f.heading, d.title, m.row_title_px, m.dp(12.5), widths[i % 2]);
+        c.text_vc(&f.heading, d.title, x, title_cy, title_px, t.pal.text, Some(widths[i % 2]));
         for (k, l) in lines.iter().enumerate() {
             c.text_vc(&f.body, l, x, title_cy + to_value + pitch * k as f32, m.sub_px, t.pal.spec_label, None);
         }
@@ -2138,8 +1894,6 @@ pub fn detail_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Deta
     bottom
 }
 
-/// A card of things to know: its heading, then each point after a dot,
-/// its lines kept clear of the dot, as the stock system update page ends.
 pub fn notes(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, heading: &str, points: &[&str]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2148,8 +1902,7 @@ pub fn notes(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, heading: &str, poin
     let indent = m.dp(NOTES_INDENT);
     let width = right - m.inner - x - indent;
     let lines: Vec<Vec<String>> = points.iter().map(|p| wrap(c, &f.body, p, px, width)).collect();
-    // Centre to centre: the heading to the first point and one point to the
-    // next, and a point's lines.
+
     let (pad, step, pitch) = (m.dp(NOTES_PAD), m.dp(NOTES_STEP), m.dp(NOTES_PITCH));
     let mut cy = top + pad;
     let mut centres = Vec::new();
@@ -2171,16 +1924,12 @@ pub fn notes(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, heading: &str, poin
     bottom
 }
 
-// The stock system update page's notes, in dp: their text, the room above
-// the heading and below the last line, and the steps between.
 const NOTES_PX: f32 = 15.0;
 const NOTES_INDENT: f32 = 6.7;
 const NOTES_PAD: f32 = 25.0;
 const NOTES_STEP: f32 = 38.0;
 const NOTES_PITCH: f32 = 18.0;
 
-/// [`section`] with a word at its right end that does something, such as
-/// the WLAN page's「刷新」: where the word can be touched.
 pub fn section_action(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, label: &str, action: &str) -> (f32, Rect) {
     let m = &t.m;
     let y = section(c, t, f, prev_bottom, label);
@@ -2192,8 +1941,6 @@ pub fn section_action(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, la
     (y, Rect::new(x - reach, ink_top - reach, w + reach + m.margin + m.inner, m.label_px + reach * 2.0))
 }
 
-/// Centred lettering with its cap line at `cap_top`, as ink whose colour
-/// comes from the field under it.
 pub fn wordmark(t: &Theme, f: &Fonts, text: &str, cap_top: f32, px: f32) -> Sprite {
     let face = &f.display;
     let w = Canvas::new(0, 0).text_width(face, text, px);
@@ -2205,21 +1952,16 @@ pub fn wordmark(t: &Theme, f: &Fonts, text: &str, cap_top: f32, px: f32) -> Spri
     })
 }
 
-/// The version line centred under the About wordmark.
 pub fn version_line(t: &Theme, f: &Fonts, text: &str) -> Sprite {
     hero_line(t, f, text, 0.0)
 }
 
-/// How far below the version, in dp, the author's line stands.
 const AUTHOR_BELOW_DP: f32 = 19.0;
 
-/// Who made the recovery, a line under the version in its type.
 pub fn author_line(t: &Theme, f: &Fonts, text: &str) -> Sprite {
     hero_line(t, f, text, t.m.dp(AUTHOR_BELOW_DP))
 }
 
-/// A line centred under the About wordmark in the version's type, `below`
-/// the version's place.
 fn hero_line(t: &Theme, f: &Fonts, text: &str, below: f32) -> Sprite {
     let m = &t.m;
     let px = m.dp(13.3);
@@ -2231,15 +1973,12 @@ fn hero_line(t: &Theme, f: &Fonts, text: &str, below: f32) -> Sprite {
     })
 }
 
-/// A row of the About summary card: title on the left, value on the right,
-/// and a chevron when the row opens a page.
 pub struct Fact<'a> {
     pub title: &'a str,
     pub value: String,
     pub link: bool,
 }
 
-/// The About summary card: rows a little shorter than settings rows.
 pub fn facts(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Fact], tone: &Tone) -> Block {
     let m = &t.m;
     let row_h = m.dp(51.0);
@@ -2265,8 +2004,6 @@ pub fn facts(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Fact], tone
     Block { bottom: top + h, rows: rects }
 }
 
-/// The About page hardware card: the model in large type (`title` may hold
-/// several lines separated by `\n`), then values with small captions.
 pub fn spec_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, items: &[(&str, String)], tone: &Tone) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2292,15 +2029,12 @@ pub fn spec_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, it
     bottom
 }
 
-/// One cell of the parameters grid. `value` may hold several lines separated
-/// by `\n`; each is wrapped to the column.
 pub struct Spec<'a> {
     pub icon: Outline,
     pub label: &'a str,
     pub value: String,
 }
 
-/// Two-column grid of icon, caption and value, as on the stock「全部参数」.
 pub fn spec_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Spec]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2328,7 +2062,8 @@ pub fn spec_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Spec])
         let (x, icy) = (cols[i % 2], centres[i / 2]);
         outline(c, t, s.icon, x + m.dp(11.5), icy);
         let label_base = icy + to_label;
-        c.text(&f.body, s.label, x, label_base, m.sub_px, t.pal.subtitle, Some(widths[i % 2]));
+        let label_px = fitted_px(c, &f.body, s.label, m.sub_px, m.dp(11.0), widths[i % 2]);
+        c.text(&f.body, s.label, x, label_base, label_px, t.pal.subtitle, Some(widths[i % 2]));
         for (k, l) in lines.iter().enumerate() {
             c.text(&f.heading, l, x, label_base + to_value + pitch * k as f32, value_px, t.pal.info, None);
         }
@@ -2336,8 +2071,6 @@ pub fn spec_grid(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[Spec])
     bottom
 }
 
-/// Parameters-page card of title-over-value entries; values keep their own
-/// line breaks and wrap to the card.
 pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str, String)]) -> f32 {
     let m = &t.m;
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
@@ -2367,17 +2100,12 @@ pub fn info_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str,
     bottom
 }
 
-/// The height of each line on a card of what a program showed.
 const OUTPUT_PITCH_DP: f32 = 19.0;
-/// From the card's top to the ink of its first line.
+
 const OUTPUT_TOP_DP: f32 = 18.0;
-/// From the baseline of the card's last line to its foot.
+
 const OUTPUT_FOOT_DP: f32 = 20.0;
 
-/// One line a program showed, as its card lays it out: in the monospaced
-/// face where it has every character of the line, so that what is laid out
-/// in columns stays so, and in the body face otherwise; wrapped to the
-/// card, on one line at least.
 fn output_line<'f>(c: &Canvas, t: &Theme, f: &'f Fonts, line: &str) -> (&'f Face, Vec<String>) {
     let m = &t.m;
     let face = if line.chars().all(|ch| f.mono.has(ch)) { &f.mono } else { &f.body };
@@ -2385,9 +2113,6 @@ fn output_line<'f>(c: &Canvas, t: &Theme, f: &'f Fonts, line: &str) -> (&'f Face
     (face, if parts.is_empty() { vec![String::new()] } else { parts })
 }
 
-/// Where a line's baseline sits in a band as tall as the line, the ink of
-/// 「中」 centred in it; then the padding the card's first row has above its
-/// bands, and its last row below them.
 fn output_layout(t: &Theme, f: &Fonts) -> (f32, f32, f32) {
     let m = &t.m;
     let pitch = m.dp(OUTPUT_PITCH_DP);
@@ -2396,10 +2121,6 @@ fn output_layout(t: &Theme, f: &Fonts) -> (f32, f32, f32) {
     (base, m.dp(OUTPUT_TOP_DP) - (base + ink_top), m.dp(OUTPUT_FOOT_DP) - (pitch - base))
 }
 
-/// The rows of a card of the lines a program showed, one to each line and
-/// as tall as it wraps to, the first starting at `top` and the first and
-/// the last holding the card's padding; whole pixels, so the rows meet
-/// without seams. Each is drawn as it comes into view, by [`output_row`].
 pub fn output_edges(c: &Canvas, t: &Theme, f: &Fonts, top: f32, lines: &[String]) -> Vec<f32> {
     let pitch = t.m.dp(OUTPUT_PITCH_DP);
     let (_, above, below) = output_layout(t, f);
@@ -2415,9 +2136,6 @@ pub fn output_edges(c: &Canvas, t: &Theme, f: &Fonts, top: f32, lines: &[String]
     edges
 }
 
-/// Line `i` of `lines` over the whole of `c`, as its row of the card
-/// [`output_edges`] lays out. The card runs on past each end of the row
-/// that it goes on from, so only its first and last rows round it.
 pub fn output_row(c: &mut Canvas, t: &Theme, f: &Fonts, lines: &[String], i: usize) {
     let m = &t.m;
     let pitch = m.dp(OUTPUT_PITCH_DP);
@@ -2433,8 +2151,6 @@ pub fn output_row(c: &mut Canvas, t: &Theme, f: &Fonts, lines: &[String], i: usi
     }
 }
 
-/// Light and dark previews side by side; the active one carries an accent
-/// ring and an accent caption. The rows are the light and the dark choice.
 pub fn theme_picker(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32) -> Block {
     let m = &t.m;
     let gap = m.dp(4.0);
@@ -2463,9 +2179,6 @@ pub fn theme_picker(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32) -> 
     Block { bottom, rows: rects }
 }
 
-/// What a card on the systems page shows: what the system is to the phone,
-/// in small type, its name in large, and its version or what the card
-/// offers under that.
 pub struct SystemCard<'a> {
     pub role: &'a str,
     pub name: &'a str,
@@ -2473,23 +2186,17 @@ pub struct SystemCard<'a> {
     pub mark: SystemMark,
 }
 
-/// What a system card shows at its right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemMark {
-    /// The check of a choice, filled on the system picked.
+
     Check(bool),
-    /// The place a second system would take: the card opens a page, and
-    /// its name is in the accent colour, as an action.
+
     Opens,
 }
 
-/// A system card's height, and the size of its name.
 const SYSTEM_CARD_DP: f32 = 132.0;
 const SYSTEM_NAME_DP: f32 = 30.0;
 
-/// The systems as big cards one over the other: each a choice of a list
-/// grown large, in the same type and colours, its name in the type of a
-/// page's title. The rows are the cards.
 pub fn system_cards(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, cards: &[SystemCard]) -> Block {
     let m = &t.m;
     let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(SYSTEM_CARD_DP));
@@ -2504,8 +2211,6 @@ pub fn system_cards(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, cards: &[Sys
     Block { bottom: y - m.card_gap, rows }
 }
 
-/// One system's card at `r`: the role, the name and the line under it as
-/// one block in the middle of the card's height, and its mark at the right.
 fn system_card(c: &mut Canvas, t: &Theme, f: &Fonts, r: Rect, card: &SystemCard) {
     let m = &t.m;
     c.fill_round_rect(r.x, r.y, r.w, r.h, m.card_radius, t.pal.card);
@@ -2522,8 +2227,7 @@ fn system_card(c: &mut Canvas, t: &Theme, f: &Fonts, r: Rect, card: &SystemCard)
     c.text_top(&f.label, card.role, x, y, m.label_px, t.pal.section, Some(room));
     y += role_h + above;
     let name_ink = if card.mark == SystemMark::Opens { t.pal.accent } else { t.pal.text };
-    // Only a name too long even at the least size is cut short; one sized
-    // to fit is drawn whole, its last pixel's rounding aside.
+
     let cut = (c.text_width(&f.title, card.name, px) > room + 1.0).then_some(room);
     c.text_top(&f.title, card.name, x, y, px, name_ink, cut);
     y += name_h + below;
@@ -2535,8 +2239,6 @@ fn system_card(c: &mut Canvas, t: &Theme, f: &Fonts, r: Rect, card: &SystemCard)
     }
 }
 
-/// The check of a choice centred on (`cx`, `cy`): an accent disc with a
-/// white tick on the one chosen, an empty ring on the others.
 pub fn check_circle(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, on: bool) {
     let m = &t.m;
     let d = m.dp(24.0);
@@ -2550,9 +2252,7 @@ pub fn check_circle(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, on: bool) {
     }
 }
 
-/// The largest size, from `most` down to `least`, at which `text` fits in
-/// `room`.
-fn fitted_px(c: &Canvas, face: &Face, text: &str, most: f32, least: f32, room: f32) -> f32 {
+pub(crate) fn fitted_px(c: &Canvas, face: &Face, text: &str, most: f32, least: f32, room: f32) -> f32 {
     let w = c.text_width(face, text, most);
     if w <= room {
         most
@@ -2561,19 +2261,17 @@ fn fitted_px(c: &Canvas, face: &Face, text: &str, most: f32, least: f32, room: f
     }
 }
 
-/// Which keys the on-screen keyboard shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
     Letters,
-    /// Capitals, for the next letter typed.
+
     Shifted,
-    /// Digits and the common symbols.
+
     Digits,
-    /// The rest of the ASCII symbols.
+
     Symbols,
 }
 
-/// A key of the on-screen keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cap {
     Char(char),
@@ -2581,12 +2279,10 @@ pub enum Cap {
     Backspace,
     Space,
     Enter,
-    /// Show another layer.
+
     Show(Layer),
 }
 
-/// The keys between the side keys of each row, per layer. Together the
-/// digit and symbol layers hold every printable ASCII character.
 fn rows(layer: Layer) -> [&'static str; 3] {
     match layer {
         Layer::Letters | Layer::Shifted => ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
@@ -2596,26 +2292,20 @@ fn rows(layer: Layer) -> [&'static str; 3] {
 }
 
 const KEY_H_DP: f32 = 44.0;
-/// How round a key's corners are.
+
 pub const KEY_RADIUS_DP: f32 = 6.0;
 const KEY_GAP_X_DP: f32 = 5.5;
 const KEY_GAP_Y_DP: f32 = 11.0;
 const KEYBOARD_PAD_X_DP: f32 = 3.5;
 const KEYBOARD_TOP_DP: f32 = 9.0;
-/// Room under the last row for the gesture area of the screen's edge.
+
 const KEYBOARD_BOTTOM_DP: f32 = 26.0;
 
-/// How tall the keyboard is on this theme's screen.
 pub fn keyboard_height(t: &Theme) -> f32 {
     let m = &t.m;
     m.dp(KEYBOARD_TOP_DP + 4.0 * KEY_H_DP + 3.0 * KEY_GAP_Y_DP + KEYBOARD_BOTTOM_DP)
 }
 
-/// The on-screen keyboard across the bottom of the screen, its top at
-/// `top`: four rows of keys in `layer`, `pressed` drawn held down, and the
-/// return key saying what it does; its words in `l`. Returns where each
-/// key answers a touch, the gaps between keys shared out among their
-/// neighbours.
 #[allow(clippy::too_many_arguments)]
 pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
     let m = &t.m;
@@ -2632,8 +2322,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
     let row_top = |r: usize| top + m.dp(KEYBOARD_TOP_DP) + r as f32 * (kh + gy);
     let mut keys: Vec<(Rect, Cap)> = Vec::new();
     let [first, second, third] = rows(layer);
-    // Rows of plain keys are centred: the letters' second row sits half a
-    // key in, as on any phone keyboard.
+
     let centred = |n: usize, width: f32| (w - (n as f32 * width + (n as f32 - 1.0) * gx)) / 2.0;
     for (r, row) in [first, second].iter().enumerate() {
         let n = row.chars().count();
@@ -2691,13 +2380,20 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
                 let label = if layer == Layer::Shifted { ch.to_ascii_uppercase() } else { ch };
                 c.text_center(&f.heading, &label.to_string(), cx, cy, glyph_px, ink);
             }
-            Cap::Space => c.text_center(&f.body, l.pick(["空格", "空格", "Space"]), cx, cy, m.sub_px, ink),
-            Cap::Enter => c.text_center(&f.heading, enter, cx, cy, m.sub_px, Rgba::rgb(255, 255, 255)),
+            Cap::Space => {
+                let s = l.pick(["空格", "空格", "Space"]);
+                let px = fitted_px(c, &f.body, s, m.sub_px, m.dp(10.5), r.w - m.dp(8.0));
+                c.text_center(&f.body, s, cx, cy, px, ink);
+            }
+            Cap::Enter => {
+                let px = fitted_px(c, &f.heading, enter, m.sub_px, m.dp(10.0), r.w - m.dp(8.0));
+                c.text_center(&f.heading, enter, cx, cy, px, Rgba::rgb(255, 255, 255));
+            }
             Cap::Show(Layer::Digits) => c.text_center(&f.heading, "123", cx, cy, m.sub_px, ink),
             Cap::Show(Layer::Symbols) => c.text_center(&f.heading, "#+=", cx, cy, m.sub_px, ink),
             Cap::Show(_) => c.text_center(&f.heading, "abc", cx, cy, m.sub_px, ink),
             Cap::Shift => {
-                // An upward arrow, solid while the next letter is a capital.
+
                 let s = m.dp(9.0);
                 let pts = [
                     (cx, cy - s),
@@ -2720,7 +2416,7 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
                 }
             }
             Cap::Backspace => {
-                // A key cap pointing left, with a cross in it.
+
                 let (hw, hh) = (m.dp(11.0), m.dp(8.0));
                 let pts = [(cx - hw, cy), (cx - hw * 0.45, cy - hh), (cx + hw, cy - hh), (cx + hw, cy + hh), (cx - hw * 0.45, cy + hh)];
                 for k in 0..pts.len() {
@@ -2733,12 +2429,10 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
             }
         }
     }
-    // A touch between keys belongs to the nearest one.
+
     keys.into_iter().map(|(r, cap)| (Rect::new(r.x - gx / 2.0, r.y - gy / 2.0, r.w + gx, r.h + gy), cap)).collect()
 }
 
-/// Miniature settings page: a blue backdrop with two cards of placeholder
-/// lines, light cards for the light theme and dark ones for the dark theme.
 fn theme_tile(c: &mut Canvas, t: &Theme, x: f32, y: f32, w: f32, h: f32, dark: bool) {
     let (top, bottom) = (Rgba::rgb(77, 113, 246), Rgba::rgb(115, 184, 249));
     let grad = |py: f32| mix(top, bottom, (py - y) / h);
@@ -2760,15 +2454,12 @@ fn theme_tile(c: &mut Canvas, t: &Theme, x: f32, y: f32, w: f32, h: f32, dark: b
 mod tests {
     use super::*;
 
-    /// The battery's pixel at (`x`, `y`) on screen.
     fn pixel(art: &(Canvas, i32, i32), x: f32, y: f32) -> [u8; 4] {
         let (c, ox, oy) = art;
         let i = ((y as i32 - oy) as usize * c.w as usize + (x as i32 - ox) as usize) * 4;
         c.data[i..i + 4].try_into().unwrap()
     }
 
-    /// The box round the pixels of `c` in `area` that `keep` picks: its
-    /// left, top, right and bottom edges.
     fn ink_box(c: &Canvas, area: Rect, keep: impl Fn(&[u8]) -> bool) -> (f32, f32, f32, f32) {
         let mut b = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for y in area.y as u32..(area.y + area.h) as u32 {
@@ -2808,7 +2499,7 @@ mod tests {
             outline_in(&mut c, &t, icon, 100.0, 100.0, Rgba::rgb(0, 0, 0));
             let (l, top, right, bottom) = ink_box(&c, Rect::new(0.0, 0.0, 200.0, 200.0), |p| p[0] < 200);
             let (x, y) = ((l + right) / 2.0, (top + bottom) / 2.0);
-            // Within a dp of the place's centre, three pixels a dp.
+
             assert!((x - 100.0).abs() <= 3.0 && (y - 100.0).abs() <= 3.0, "{icon:?} centred: ({x}, {y})");
             assert!(right - l <= 66.0 && bottom - top <= 66.0, "{icon:?} within 22 dp: {}x{}", right - l, bottom - top);
         }
@@ -2816,10 +2507,7 @@ mod tests {
 
     #[test]
     fn the_network_joined_shows_in_the_status_bar_where_the_stock_one_does() {
-        // The 17 Ultra's bar over its grey page, three pixels a dp, charging:
-        // its fan's ink from 930 to 968 and 59 to 94, its arrows' rows across
-        // 970..979, and the speed's lines from 54 to 71 and 80 to 95, ending
-        // 13 pixels short of the fan.
+
         let t = Theme::light(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let draw = |mark: WlanMark| {
@@ -2842,8 +2530,7 @@ mod tests {
         assert!((figures.1 - 54.0).abs() <= 1.0 && (figures.3 - 72.0).abs() <= 1.0, "figures {figures:?}");
         assert!((unit.1 - 80.0).abs() <= 1.0 && (unit.3 - 96.0).abs() <= 1.0, "unit {unit:?}");
         assert!((fan.0 - figures.2.max(unit.2) - 13.0).abs() <= 1.5, "the speed ends short of the fan: {figures:?} {unit:?}");
-        // A weak signal lights the slice alone, and data going neither way
-        // leaves both arrows dim, in the battery's empty grey.
+
         let c = draw(WlanMark { level: 1, receiving: false, sending: false, speed: "0.00".into(), unit: "KB/s" });
         let dim = over(t.pal.battery.empty, t.pal.bg);
         let at = |x: u32, y: u32| Rgba::rgb(c.data[((y * 1200 + x) * 4) as usize], c.data[((y * 1200 + x) * 4 + 1) as usize], c.data[((y * 1200 + x) * 4 + 2) as usize]);
@@ -2855,17 +2542,14 @@ mod tests {
 
     #[test]
     fn the_marks_stand_in_the_stock_order_and_spacing_left_of_the_battery() {
-        // On the 17 Ultra's bar, three pixels a dp, the stock network speed
-        // stands 13 pixels short of the next mark, and so does each mark of
-        // its own the next.
+
         let t = Theme::dark(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let mut c = Canvas::filled(1200, 160, t.pal.bg);
         let wlan = Some(WlanMark { level: 3, receiving: true, sending: true, speed: "0.00".into(), unit: "KB/s" });
         let bar = Bar { clock: "01:27", battery: Some((40, None)), wlan, data: Some(false), slot: Some("B"), temp: Some(362) };
         status_bar(&mut c, &t, &f, &bar, t.pal.status);
-        // Runs of inked columns on the bar's right half, those a few pixels
-        // apart taken as one mark.
+
         let inked = |x: u32| (40..120).any(|y| c.data[((y * 1200 + x) * 4) as usize] > 60);
         let mut marks: Vec<(u32, u32)> = Vec::new();
         for x in (600..1200).filter(|&x| inked(x)) {
@@ -2883,8 +2567,7 @@ mod tests {
 
     #[test]
     fn the_slot_is_cut_out_of_a_badge_as_the_stock_bar_draws_nfc() {
-        // The stock NFC badge, three pixels a dp: 38 pixels square over the
-        // bar's middle, here with a capital 20 tall cut out of it.
+
         let t = Theme::dark(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let (art, _, oy, side) = badge(&t, &f, "B", 1000.0, t.m.status_cy, Rgba::rgb(255, 255, 255));
@@ -2895,8 +2578,7 @@ mod tests {
         assert!((rows.len() as i32 - 38).abs() <= 1 && (cols as i32 - 38).abs() <= 1, "{} by {cols}", rows.len());
         let middle = oy as f32 + (rows[0] + rows[rows.len() - 1] + 1) as f32 / 2.0;
         assert!((middle - t.m.status_cy).abs() <= 1.0, "on the bar's middle: {middle}");
-        // Rows of the badge, clear of its corners, where the letter lets what
-        // is behind show through.
+
         let inner = rows[0] + 6..rows[rows.len() - 1] - 5;
         let cut = inner.filter(|&y| (6..art.w - 6).any(|x| alpha(x, y) < 64)).count();
         assert!((cut as i32 - 20).abs() <= 1, "the capital cut out: {cut} rows");
@@ -2916,20 +2598,18 @@ mod tests {
         assert!((middle - cy).abs() <= 1.0, "on the bar's middle: {middle}");
         assert!(((shut_rows[0] - open_rows[0]) as f32 - m.dp(LOCK_RISE_DP)).abs() <= 1.0, "open, the shackle rises");
         assert_eq!(shut_rows.last(), open_rows.last(), "on the same body");
-        // Just above the body, down the right leg: inked shut, clear open.
+
         let (mid, body) = (1000.0 - w / 2.0, cy + m.dp(LOCK_MARK_H_DP) / 2.0 - m.dp(LOCK_BODY_H_DP));
         let leg = mid + (m.dp(LOCK_SHACKLE_W_DP) - m.dp(LOCK_STROKE_DP)) / 2.0;
         assert!(alpha(&shut, leg, body - 2.0) > 200 && alpha(&open, leg, body - 2.0) < 30);
-        // The keyhole lets what is behind show through the body.
+
         let keyhole = body + m.dp(LOCK_BODY_H_DP) * 0.42;
         assert!(alpha(&shut, mid, keyhole) < 30 && alpha(&shut, mid - m.dp(3.0), keyhole) > 200);
     }
 
     #[test]
     fn the_bolts_stand_past_the_battery_as_the_stock_bar_draws_them() {
-        // The 17 Ultra's bar, three pixels a dp, charging quickly: the stock
-        // bolt covers a quarter of a pixel or more across 1069..1086 and
-        // down 60..94, and its left edge steps right at rows 76 and 85.
+
         let t = Theme::dark(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let draw = |kind| {
@@ -2938,8 +2618,7 @@ mod tests {
             status_bar(&mut c, &t, &f, &bar, t.pal.status);
             c
         };
-        // How much of a pixel the bolt covers, and the rows where its left
-        // edge steps right, each the top of a step.
+
         let cover = |p: &[u8]| p[0] as f32 / t.pal.battery.bolt.a as f32;
         let steps = |c: &Canvas| -> Vec<u32> {
             let lefts: Vec<(u32, u32)> = (40..120)
@@ -2959,9 +2638,7 @@ mod tests {
 
     #[test]
     fn a_list_of_choices_opens_where_the_stock_one_does_and_ticks_the_one_taken() {
-        // The 17 Ultra, three pixels a dp: its row of protections spans
-        // 621 to 797, the arrows after its value 1086..1116 by 685..731,
-        // and its list 256..1114 from 666, the tick 1003..1040 by 741..771.
+
         let t = Theme::light(1200, 2608, 3.0);
         let f = crate::font::bundled();
         let mut c = Canvas::filled(1200, 2608, t.pal.bg);
@@ -3002,21 +2679,20 @@ mod tests {
     #[test]
     fn the_search_cursor_stands_where_the_stock_field_puts_it() {
         let f = crate::font::bundled();
-        // A Xiaomi 13 Ultra panel.
+
         let t = Theme::light(1440, 3200, 3.5);
         let (x, w, cy) = (t.m.dp(48.0), t.m.dp(340.0), t.m.dp(60.0));
         let px = t.m.row_title_px;
         let (ink_top, ink_bottom) = f.heading.ink(px);
         let base = cy - (ink_top + ink_bottom) / 2.0;
         let (line_top, line_bottom) = f.heading.line(px);
-        // The cursor's pixels are blue, darker where the placeholder crosses
-        // it; the field, its text and the placeholder are grey.
+
         let blue = |p: &[u8]| p[2] as i32 - p[0] as i32 > 60;
         for text in ["", "bf"] {
             let mut c = Canvas::new(t.m.w, t.m.dp(120.0) as u32);
             let field = search_field(&mut c, &t, &f, x, w, cy, text, "搜索功能与分区");
             assert_eq!(ink_box(&c, field.field, blue).0, f32::MAX, "{text:?}: the field is drawn without its cursor");
-            // The cursor laid over the field, as the page does while it shows.
+
             c.lay(&field.caret.art, field.caret.x, field.caret.y, 1.0);
             let (cl, ct, cr, cb) = ink_box(&c, field.field, blue);
             let left = x + t.m.search_text_inset + c.text_width(&f.heading, text, px);
@@ -3032,8 +2708,7 @@ mod tests {
         let t = Theme::light(1200, 2608, 3.0);
         let ink = t.pal.battery;
         let (right, cy) = (1000.0, 77.0);
-        // 69 px wide from 930.85; the row 15 px above the middle is clear
-        // of the digits.
+
         let rgba = |c: Rgba| [c.r, c.g, c.b, c.a];
         let half = battery(&t, &f, 50, false, right, cy);
         assert_eq!(pixel(&half, 948.0, cy - 15.0), rgba(ink.level), "a quarter in is filled");
@@ -3054,7 +2729,7 @@ mod tests {
         let f = crate::font::bundled();
         let t = Theme::dark(1200, 2608, 3.0);
         let (right, cy) = (1000.0, 77.0);
-        // Inside the body, clear of its rounded ends and edges.
+
         let holes = |art: &(Canvas, i32, i32)| -> usize {
             let mut n = 0;
             for y in (cy - 15.0) as i32..(cy + 15.0) as i32 {

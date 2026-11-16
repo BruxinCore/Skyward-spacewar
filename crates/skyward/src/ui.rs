@@ -1010,6 +1010,10 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        if !app.state.language_chosen && matches!(app.state.lang, Lang::En) {
+            app.state.lang = Lang::PtBr;
+            app.refresh();
+        }
         if kept.settings().is_none() {
             app.state.brightness = 0.55;
         }

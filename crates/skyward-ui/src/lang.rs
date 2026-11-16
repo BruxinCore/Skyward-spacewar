@@ -1,53 +1,52 @@
 use anyhow::{Context, Result};
 use icu_locale_core::Locale;
 
-/// A language the pages speak.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
-    /// Chinese in simplified characters, as mainland China writes it.
     Hans,
-    /// Chinese in traditional characters, as Taiwan writes it.
     Hant,
     En,
+    PtBr,
 }
 
-/// One text written in each language, in the order of [`Lang::ALL`].
 pub type Text = [&'static str; 3];
 
 impl Lang {
-    /// The languages, in the order the language page lists them.
-    pub const ALL: [Lang; 3] = [Lang::Hans, Lang::Hant, Lang::En];
+    pub const ALL: [Lang; 4] = [Lang::Hans, Lang::Hant, Lang::En, Lang::PtBr];
 
-    /// The language's name, written in it.
     pub fn name(self) -> &'static str {
-        self.pick(["简体中文", "繁體中文", "English"])
+        match self {
+            Lang::Hans => "简体中文",
+            Lang::Hant => "繁體中文",
+            Lang::En => "English",
+            Lang::PtBr => "Português (Brasil)",
+        }
     }
 
-    /// The language as a locale, which [`Lang::for_locale`] reads back.
     pub fn tag(self) -> &'static str {
-        self.pick(["zh-Hans", "zh-Hant", "en"])
+        match self {
+            Lang::Hans => "zh-Hans",
+            Lang::Hant => "zh-Hant",
+            Lang::En => "en",
+            Lang::PtBr => "pt-BR",
+        }
     }
 
-    /// Of the same thing written in each language, in the order of
-    /// [`Lang::ALL`], the one in this language.
-    pub fn pick<T>(self, [hans, hant, en]: [T; 3]) -> T {
+    pub fn pick<'a>(self, [hans, hant, en]: [&'a str; 3]) -> &'a str {
         match self {
             Lang::Hans => hans,
             Lang::Hant => hant,
             Lang::En => en,
+            Lang::PtBr => crate::pt_br::pick(en).unwrap_or(en),
         }
     }
 
-    /// The language for a locale: the `zh-CN` a system is built to start
-    /// in, or the one it hands the recovery with the work it asks for,
-    /// which older systems write `zh_CN`. Chinese in that script or, with
-    /// none named, in the one Taiwan, Hong Kong and Macau write in
-    /// traditional characters, any other Chinese in simplified ones, and
-    /// every other language in English.
     pub fn for_locale(tag: &str) -> Result<Lang> {
-        // ICU takes a hyphen alone between the parts of a locale.
         let locale = Locale::try_from_str(&tag.replace('_', "-")).with_context(|| format!("read the locale {tag:?}"))?;
         let id = locale.id;
+        if id.language.as_str() == "pt" {
+            return Ok(Lang::PtBr);
+        }
         if id.language.as_str() != "zh" {
             return Ok(Lang::En);
         }
@@ -59,16 +58,21 @@ impl Lang {
     }
 }
 
-/// A text written in each language, made as [`format!`] makes it of the
-/// values it names:
-/// `tr!(l, "挂载 {base} 失败", "掛載 {base} 失敗", "Couldn't mount {base}")`.
 #[macro_export]
 macro_rules! tr {
-    ($l:expr, $hans:literal, $hant:literal, $en:literal $(,)?) => {
+    ($l:expr, $hans:literal, $hant:literal, $en:literal, $pt:literal $(,)?) => {
         match $l {
             $crate::lang::Lang::Hans => format!($hans),
             $crate::lang::Lang::Hant => format!($hant),
             $crate::lang::Lang::En => format!($en),
+            $crate::lang::Lang::PtBr => format!($pt),
+        }
+    };
+    ($l:expr, $hans:literal, $hant:literal, $en:literal $(,)?) => {
+        match $l {
+            $crate::lang::Lang::Hans => format!($hans),
+            $crate::lang::Lang::Hant => format!($hant),
+            $crate::lang::Lang::En | $crate::lang::Lang::PtBr => format!($en),
         }
     };
 }
@@ -82,8 +86,6 @@ mod tests {
     use std::path::Path;
     use syn::visit::Visit;
 
-    /// The texts a source file writes: its string literals, those among a
-    /// macro's arguments too.
     #[derive(Default)]
     struct Texts(Vec<String>);
 
@@ -113,8 +115,6 @@ mod tests {
         }
     }
 
-    /// Read into `texts` what every source file in `folder` writes, those
-    /// in the folders under it too.
     fn read(texts: &mut Texts, folder: &Path) {
         for entry in fs::read_dir(folder).unwrap() {
             let path = entry.unwrap().path();
@@ -149,6 +149,8 @@ mod tests {
         assert_eq!(of("zh-Hant-TW"), Lang::Hant);
         assert_eq!(of("zh-Hans-HK"), Lang::Hans, "a script named wins over the region");
         assert_eq!(of("en-US"), Lang::En);
+        assert_eq!(of("pt-BR"), Lang::PtBr);
+        assert_eq!(of("pt_BR"), Lang::PtBr);
         assert_eq!(of("ja-JP"), Lang::En, "a language the pages do not speak");
         assert!(Lang::for_locale("not a locale").is_err());
     }
@@ -163,8 +165,10 @@ mod tests {
     #[test]
     fn a_text_is_picked_and_made_in_the_language() {
         assert_eq!(Lang::Hant.pick(["设置", "設定", "Settings"]), "設定");
+        assert_eq!(Lang::PtBr.pick(["设置", "設定", "Settings"]), "Configurações");
         let base = "vendor";
-        assert_eq!(tr!(Lang::En, "挂载 {base} 失败", "掛載 {base} 失敗", "Couldn't mount {base}"), "Couldn't mount vendor");
-        assert_eq!(Lang::ALL.map(Lang::name), ["简体中文", "繁體中文", "English"]);
+        assert_eq!(tr!(Lang::En, "挂载 {base} 失败", "掛載 {base} 失敗", "Couldn't mount {base}", "Falha ao montar {base}"), "Couldn't mount vendor");
+        assert_eq!(tr!(Lang::PtBr, "挂载 {base} 失败", "掛載 {base} 失敗", "Couldn't mount {base}", "Falha ao montar {base}"), "Falha ao montar vendor");
+        assert_eq!(Lang::ALL.map(Lang::name), ["简体中文", "繁體中文", "English", "Português (Brasil)"]);
     }
 }
