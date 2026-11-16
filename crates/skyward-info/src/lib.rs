@@ -120,18 +120,17 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
     };
     let system = SystemProps::current()?;
     Ok(DeviceInfo {
-        model: system.get("ro.product.marketname").unwrap_or_else(|| cfg.device.model.clone()),
+        model: system
+            .get("ro.product.marketname")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| cfg.device.model.clone()),
         codename: cfg.device.codename.clone(),
         soc: cfg.device.soc.clone(),
         cpu: cpu(Path::new(CPU))?,
         ram_kib: mem_total(&read("/proc/meminfo")?)?,
         panel: (d.width > 0 && d.height > 0).then_some((d.width, d.height)),
         screen: d.diagonal,
-        os_version: system
-            .get(&cfg.device.os_version_prop)
-            .or_else(|| system.get("ro.build.nothing.version"))
-            .or_else(|| system.get("ro.mi.os.version.incremental"))
-            .or_else(|| system.get("ro.build.display.id")),
+        os_version: system.detect_os(&cfg.device.os_version_prop),
         android: system.get("ro.build.version.release"),
         locale: system.get("ro.product.locale"),
         security_patch: system.get("ro.build.version.security_patch").map(|s| s.parse()).transpose()?,
@@ -173,6 +172,114 @@ impl SystemProps {
             SystemProps::Installed(props) => props.get(name).cloned(),
         }
     }
+
+    fn detect_os(&self, configured: &str) -> Option<String> {
+        detect_os_with(|name| self.get(name), configured)
+    }
+}
+
+const CUSTOM_ROM_PROPS: &[(&str, &str)] = &[
+    ("ro.lineage.version", "LineageOS"),
+    ("ro.lineage.build.version", "LineageOS"),
+    ("org.evolution.build_version", "Evolution X"),
+    ("ro.evolution.version", "Evolution X"),
+    ("org.pixelos.version", "PixelOS"),
+    ("net.pixelos.version", "PixelOS"),
+    ("ro.pixelos.version", "PixelOS"),
+    ("ro.crdroid.version", "crDroid"),
+    ("ro.pa.version", "Paranoid Android"),
+    ("ro.aospa.version", "Paranoid Android"),
+    ("ro.paranoid.version", "Paranoid Android"),
+    ("ro.derpfest.version", "DerpFest"),
+    ("org.elixir.version", "Project Elixir"),
+    ("ro.elixir.version", "Project Elixir"),
+    ("ro.matrixx.version", "Project Matrixx"),
+    ("ro.rising.version", "RisingOS"),
+    ("ro.yaap.version", "YAAP"),
+    ("ro.arrow.version", "ArrowOS"),
+    ("ro.statix.version", "StatiXOS"),
+    ("ro.cherish.version", "CherishOS"),
+    ("ro.superior.version", "SuperiorOS"),
+    ("org.nameless.version", "Nameless"),
+    ("ro.infinity.version", "Project Infinity X"),
+    ("ro.afterlife.version", "AfterLife"),
+    ("ro.voltage.version", "VoltageOS"),
+    ("ro.alpha.version", "AlphaDroid"),
+    ("ro.genesis.version", "GenesisOS"),
+    ("ro.pixys.version", "PixysOS"),
+    ("ro.stag.version", "StagOS"),
+    ("ro.spark.version", "SparkOS"),
+    ("ro.bliss.version", "BlissRoms"),
+    ("ro.havoc.version", "Havoc-OS"),
+    ("ro.aicp.version", "AICP"),
+    ("ro.omni.version", "OmniROM"),
+];
+
+pub fn detect_os_version(props: &HashMap<String, String>, configured: &str) -> Option<String> {
+    detect_os_with(|name| props.get(name).cloned(), configured)
+}
+
+fn detect_os_with(get_raw: impl Fn(&str) -> Option<String>, configured: &str) -> Option<String> {
+    let get = |name: &str| get_raw(name).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let prefix_with = |label: &str, v: &str| {
+        if v.to_ascii_lowercase().starts_with(&label.to_ascii_lowercase()) {
+            v.to_string()
+        } else {
+            format!("{label} {v}")
+        }
+    };
+    if let Some(v) = get("ro.mi.os.version.incremental").or_else(|| get("ro.mi.os.version.name")) {
+        return Some(format!("HyperOS {}", v.strip_prefix("OS").unwrap_or(&v)));
+    }
+    if let Some(v) = get("ro.miui.ui.version.name") {
+        if let Some(inc) = get("ro.system.build.version.incremental").or_else(|| get("ro.build.version.incremental")) {
+            return Some(prefix_with("MIUI", &inc));
+        }
+        return Some(format!("MIUI {}", v.strip_prefix('V').unwrap_or(&v)));
+    }
+    if let Some(v) = get("ro.oxygen.version") {
+        return Some(prefix_with("OxygenOS", &v));
+    }
+    if let Some(v) = get("ro.build.display.ota").or_else(|| get("ro.oplus.version.my_manifest")) {
+        if v.contains("OxygenOS") || v.contains("ColorOS") || v.contains("Realme") {
+            return Some(v);
+        }
+        let brand = get("ro.product.system.brand").or_else(|| get("ro.product.brand")).unwrap_or_default();
+        let label = if brand.eq_ignore_ascii_case("OnePlus") { "OxygenOS" } else { "ColorOS" };
+        return Some(prefix_with(label, &v));
+    }
+    for (prop_name, label) in CUSTOM_ROM_PROPS {
+        if let Some(v) = get(prop_name) {
+            return Some(prefix_with(label, &v));
+        }
+    }
+    for prop_name in ["ro.modversion", "ro.custom.version", "ro.rom.version"] {
+        if let Some(v) = get(prop_name) {
+            return Some(v);
+        }
+    }
+    if configured != "ro.build.display.id" && configured != "ro.build.nothing.version"
+        && let Some(v) = get(configured)
+    {
+        return Some(v);
+    }
+    let is_nothing_system = get("ro.system.build.fingerprint")
+        .or_else(|| get("ro.build.fingerprint"))
+        .is_some_and(|fp| fp.starts_with("Nothing/"))
+        && get("ro.build.flavor").is_none_or(|fl| fl.contains("Spacewar") || fl.contains("Nothing"));
+    if is_nothing_system {
+        if let Some(id) = get("ro.nothing.version.id") {
+            return Some(prefix_with("Nothing OS", &id));
+        }
+        if let Some(v) = get("ro.build.nothing.version") {
+            return Some(v);
+        }
+    }
+    get("ro.build.display.id")
+        .or_else(|| get(configured))
+        .or_else(|| get("ro.system.build.version.incremental"))
+        .or_else(|| get("ro.build.version.incremental"))
+        .or_else(|| get("ro.build.nothing.version"))
 }
 
 const PROP_ORDER: [&str; 8] = ["system", "system_ext", "system_dlkm", "vendor", "vendor_dlkm", "odm_dlkm", "odm", "product"];
@@ -188,9 +295,15 @@ pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
     let mut props: HashMap<String, String> = skyward_sys::props(BOOT_PROPS).into_iter().collect();
     for m in &parts {
         let files: &[&str] = match base(m).as_str() {
-            "system" => &["system/build.prop"],
+            "system" => &[
+                "system/build.prop",
+                "system/system_ext/etc/build.prop",
+                "system/product/etc/build.prop",
+                "my_manifest/build.prop",
+                "my_product/build.prop",
+            ],
             "vendor" => &["default.prop", "build.prop"],
-            _ => &["etc/build.prop"],
+            _ => &["etc/build.prop", "build.prop"],
         };
         for f in files {
             let path = m.mount_point.join(f);

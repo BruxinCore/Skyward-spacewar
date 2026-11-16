@@ -35,17 +35,15 @@ pub struct Other {
 }
 
 pub fn installed_name(props: &HashMap<String, String>, version_prop: &str) -> Named {
-    let name = if let Some(nothing) = props.get("ro.build.nothing.version") {
-        format!("Nothing OS {nothing}")
-    } else {
-        match (props.get("ro.mi.os.version.code"), props.get("ro.build.version.release")) {
-            (Some(code), _) => format!("HyperOS {code}"),
-            (None, Some(release)) => format!("Android {release}"),
-            (None, None) => "Android".into(),
-        }
+    let name = match (props.get("ro.mi.os.version.code"), props.get("ro.build.nothing.version"), props.get("ro.build.version.release")) {
+        (Some(code), _, _) => format!("HyperOS {code}"),
+        (None, Some(nothing), _) => format!("Nothing OS {nothing}"),
+        (None, None, Some(release)) => format!("Android {release}"),
+        (None, None, None) => "Android".into(),
     };
     let version = props
         .get(version_prop)
+        .or_else(|| props.get("ro.mi.os.version.incremental"))
         .or_else(|| props.get("ro.build.nothing.version"))
         .or_else(|| props.get("ro.build.display.id"))
         .cloned();
