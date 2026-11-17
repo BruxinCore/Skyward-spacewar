@@ -445,28 +445,41 @@ fn load_modules(cfg: &DeviceConfig, names: &[String]) -> Result<Vec<PathBuf>> {
 fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Found>) -> Result<()> {
     let nodes = skyward_sys::ueventd::apply()?;
     skyward_sys::kmsg(&format!("{nodes} device nodes given the owner their phone describes"))?;
-    let props = skyward_info::installed_props(slot)?;
-    adopt_installed_version(&props)?;
+    let props = skyward_info::installed_props(slot).unwrap_or_default();
+    if let Err(e) = adopt_installed_version(&props) {
+        skyward_sys::kmsg(&format!("version not adopted: {e:#}"))?;
+    }
     if let Some(logd) = &cfg.logd
         && let Err(e) = start_logd(logd)
     {
         skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
     }
     let services: Vec<Started> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().map(Started::from).collect();
-    std::fs::write(FIRMWARE_FALLBACK, "1").with_context(|| format!("write 1 to {FIRMWARE_FALLBACK}"))?;
-    if let Some(firmware) = &cfg.firmware {
-        mount_firmware(&firmware.partition)?;
+    let _ = std::fs::write(FIRMWARE_FALLBACK, "1");
+    if let Some(firmware) = &cfg.firmware
+        && let Err(e) = mount_firmware(&firmware.partition)
+    {
+        skyward_sys::kmsg(&format!("firmware not mounted: {e:#}"))?;
     }
     for name in &cfg.partitions.mounted {
-        let at = skyward_block::fstab::mount(name)?;
-        skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?;
+        match skyward_block::fstab::mount(name) {
+            Ok(at) => skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?,
+            Err(e) => skyward_sys::kmsg(&format!("{name} not mounted: {e:#}"))?,
+        }
     }
-    for path in load_modules(cfg, &cfg.modules.load)? {
-        skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+    match load_modules(cfg, &cfg.modules.load) {
+        Ok(paths) => {
+            for path in paths {
+                skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+            }
+        }
+        Err(e) => skyward_sys::kmsg(&format!("modules not loaded: {e:#}"))?,
     }
     if !cfg.owners.is_empty() {
-        let handed = hand_over(&cfg.owners)?;
-        skyward_sys::kmsg(&format!("{handed} of the phone's own files handed to the accounts its init gives them"))?;
+        match hand_over(&cfg.owners) {
+            Ok(handed) => skyward_sys::kmsg(&format!("{handed} of the phone's own files handed to the accounts its init gives them"))?,
+            Err(e) => skyward_sys::kmsg(&format!("files not handed over: {e:#}"))?,
+        }
     }
     let (described, found) = match found {
         Ok(found) => (found.described, found.steps),
@@ -487,14 +500,18 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     let mut told = registering.clone();
     told.extend(described.into_iter().filter(|name| !registering.contains(name)));
     if !told.is_empty() && Path::new("/system/bin/servicemanager").exists() {
-        secure::publish_descriptions(&told)?;
-        skyward_sys::kmsg(&format!("the service directory is told of {} of the phone's own services", told.len()))?;
+        match secure::publish_descriptions(&told) {
+            Ok(()) => skyward_sys::kmsg(&format!("the service directory is told of {} of the phone's own services", told.len()))?,
+            Err(e) => skyward_sys::kmsg(&format!("service descriptions not published: {e:#}"))?,
+        }
     }
-    let libraries = secure::libraries()?;
+    let libraries = secure::libraries().ok().flatten();
     if let Some(dir) = &libraries {
         skyward_sys::kmsg(&format!("the phone's own libraries are at {}", dir.display()))?;
     }
-    services::start(&services, libraries.as_deref())?;
+    if let Err(e) = services::start(&services, libraries.as_deref()) {
+        skyward_sys::kmsg(&format!("services not started: {e:#}"))?;
+    }
     let steps = found.context("make out from the phone's partitions how its keys are used")?;
     for line in keys::describe(&steps) {
         skyward_sys::kmsg(&format!("for the phone's keys: {}", line.replace("\n  ", ", ")))?;
@@ -592,11 +609,22 @@ const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.
 #[cfg(target_os = "android")]
 fn adopt_installed_version(props: &std::collections::HashMap<String, String>) -> Result<()> {
     for name in BUILD_VERSION {
-        let value = props.get(name).with_context(|| format!("the installed system says no {name}"))?;
+        let value = props
+            .get(name)
+            .or_else(|| (name == "ro.vendor.build.security_patch").then(|| props.get("ro.build.version.security_patch")).flatten());
+        let Some(value) = value else {
+            skyward_sys::kmsg(&format!("the installed system says no {name}"))?;
+            continue;
+        };
         if skyward_sys::prop(name).as_ref() != Some(value) {
             skyward_sys::set_prop(name, value)?;
         }
         skyward_sys::kmsg(&format!("{name} is the installed system's {value}"))?;
+    }
+    if let Some(vndk) = props.get("ro.vndk.version").or_else(|| props.get("ro.product.vndk.version")) {
+        if skyward_sys::prop("ro.vndk.version").as_ref() != Some(vndk) {
+            let _ = skyward_sys::set_prop("ro.vndk.version", vndk);
+        }
     }
     Ok(())
 }
@@ -689,7 +717,16 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<Vec<skyward_co
             for m in &mounts.partitions {
                 skyward_sys::kmsg(&format!("mounted {} on {} ({})", m.partition, m.mount_point.display(), m.filesystem))?;
             }
-            let found = secure::libraries().and_then(|libraries| keys::found(slot, libraries.as_deref()));
+            let props = skyward_info::installed_props(slot).unwrap_or_default();
+            let _ = adopt_installed_version(&props);
+            let libraries = match secure::libraries() {
+                Ok(libs) => libs,
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("libraries not mounted: {e:#}"));
+                    None
+                }
+            };
+            let found = keys::found(slot, libraries.as_deref());
             let steps = found.as_ref().ok().and_then(|found| found.steps.as_deref().ok());
             let programs = steps.map(keys::programs).unwrap_or_default();
             if let Err(e) = bring_up(cfg, slot, found) {
@@ -702,6 +739,13 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<Vec<skyward_co
             Ok(Vec::new())
         }
     }
+}
+
+#[cfg(target_os = "android")]
+pub fn retry_key_services() {
+    let Ok(cfg) = DeviceConfig::load(Path::new("/").join(ramdisk::CONFIG)) else { return };
+    let Ok(slot) = booted_slot() else { return };
+    let _ = prepare(&cfg, slot);
 }
 
 fn info(config: &str) -> Result<()> {

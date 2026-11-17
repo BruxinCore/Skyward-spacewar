@@ -107,9 +107,18 @@ pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
     let start_hardware_directory = |out: &mut Vec<Step>| -> Result<()> {
         if let Some(directory) = phone.programs.iter().find(|p| p.name == HARDWARE_DIRECTORY && phone.carries(p)) {
             start(out, started(phone, directory, Ready::Property(HARDWARE_DIRECTORY_READY), Vec::new()));
-        } else if Path::new("/mnt/system/system/bin/hwservicemanager").is_file() {
+        } else if let Some(bin) = [
+            "/mnt/system/system/bin/hwservicemanager",
+            "/mnt/system_ext/bin/hwservicemanager",
+            "/mnt/system/system/system_ext/bin/hwservicemanager",
+            "/mnt/system/bin/hwservicemanager",
+            "/system/bin/hwservicemanager",
+        ]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        {
             let service = Service {
-                path: "/mnt/system/system/bin/hwservicemanager".to_string(),
+                path: bin.to_string(),
                 args: Vec::new(),
                 libraries: libraries_of("/system/bin/hwservicemanager", phone.bundle.as_deref()),
                 oneshot: false,

@@ -43,6 +43,13 @@ impl Decryptor {
 
 pub fn with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T, String> {
     let done = (|| {
+        let needs_retry = match (Binder::open(), Binder::hardware()) {
+            (Ok(b), Ok(h)) => KeyMint::open(&b, &h).is_err(),
+            _ => true,
+        };
+        if needs_retry {
+            crate::retry_key_services();
+        }
         let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
         let service = KeyMint::open(&binder, &hardware)?;
         work(&service)

@@ -4,9 +4,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const BUNDLE_DIRS: [&str; 4] = ["/mnt/system_ext/apex", "/mnt/system/system/apex", "/mnt/product/apex", "/vendor/apex"];
+const BUNDLE_DIRS: [&str; 6] = [
+    "/mnt/system_ext/apex",
+    "/mnt/system/system/system_ext/apex",
+    "/mnt/system/system/apex",
+    "/mnt/system/apex",
+    "/mnt/product/apex",
+    "/vendor/apex",
+];
 
 const BUNDLE_IMAGE: &str = "apex_payload.img";
+const ORIGINAL_APEX: &str = "original_apex";
 
 const BUNDLE_MOUNT: &str = "/apex";
 const BUNDLE_LIBS: &str = "lib64";
@@ -29,7 +37,10 @@ const EARLY_LOADER: &str = "/system/bin/bootstrap/linker64";
 const RUNTIME_BUNDLE: &str = "com.android.runtime";
 const BUNDLE_LOADER: &str = "bin/linker64";
 
-const SERVICE_LABELS: &str = "/mnt/system/system/etc/selinux/plat_hwservice_contexts";
+const SERVICE_LABELS: [&str; 2] = [
+    "/mnt/system/system/etc/selinux/plat_hwservice_contexts",
+    "/mnt/system/etc/selinux/plat_hwservice_contexts",
+];
 const RECOVERY_LABELS: &str = "/system/etc/selinux";
 
 const HARDWARE_DRIVER: &str = "/dev/hwbinder";
@@ -44,33 +55,52 @@ const RECOVERY_MANIFEST: &str = "/system/etc/vintf/manifest.xml";
 pub fn prepare_hardware_directory(wanted: &[String]) -> Result<()> {
     skyward_binder::driver::ensure_binderfs();
     let loader = Path::new(EARLY_LOADER);
-    let from = bundle(RUNTIME_BUNDLE)?
+    let from = bundle(RUNTIME_BUNDLE)
+        .ok()
+        .flatten()
         .map(|at| at.join(BUNDLE_LOADER))
         .filter(|p| p.is_file())
+        .or_else(|| {
+            [
+                "/mnt/system/system/bin/bootstrap/linker64",
+                "/mnt/system/system/bin/linker64",
+                "/mnt/system/bin/bootstrap/linker64",
+                "/mnt/system/bin/linker64",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+        })
         .with_context(|| format!("the installed system carries no {RUNTIME_BUNDLE}, which holds the loader its own programs ask for"))?;
     let dir = loader.parent().expect("the loader is in a directory");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .with_context(|| format!("open {} to every user", dir.display()))?;
-    if loader.exists() {
-        fs::remove_file(loader).with_context(|| format!("take away {}", loader.display()))?;
+    if loader != from.as_path() {
+        if loader.symlink_metadata().is_ok() {
+            fs::remove_file(loader).with_context(|| format!("take away {}", loader.display()))?;
+        }
+        std::os::unix::fs::symlink(&from, loader).with_context(|| format!("point {} at {}", loader.display(), from.display()))?;
     }
-    std::os::unix::fs::symlink(&from, loader).with_context(|| format!("point {} at {}", loader.display(), from.display()))?;
     let driver = Path::new(HARDWARE_DRIVER);
     if !driver.exists() {
+        if driver.symlink_metadata().is_ok() {
+            let _ = fs::remove_file(driver);
+        }
         std::os::unix::fs::symlink(HARDWARE_DRIVER_NODE, driver)
             .with_context(|| format!("point {HARDWARE_DRIVER} at {HARDWARE_DRIVER_NODE}"))?;
     }
     fs::set_permissions(driver, std::os::unix::fs::PermissionsExt::from_mode(0o666))
         .with_context(|| format!("open {HARDWARE_DRIVER} to every program"))?;
-    let from = Path::new(SERVICE_LABELS);
-    let into = Path::new(RECOVERY_LABELS).join(from.file_name().expect("a named file"));
-    fs::create_dir_all(RECOVERY_LABELS).with_context(|| format!("make {RECOVERY_LABELS}"))?;
-    fs::set_permissions(RECOVERY_LABELS, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .with_context(|| format!("open {RECOVERY_LABELS} to every user"))?;
-    fs::copy(from, &into).with_context(|| format!("copy {} to {}", from.display(), into.display()))?;
-    fs::set_permissions(&into, std::os::unix::fs::PermissionsExt::from_mode(0o644))
-        .with_context(|| format!("let every user read {}", into.display()))?;
+    if let Some(from) = SERVICE_LABELS.iter().map(Path::new).find(|p| p.is_file()) {
+        let into = Path::new(RECOVERY_LABELS).join(from.file_name().expect("a named file"));
+        fs::create_dir_all(RECOVERY_LABELS).with_context(|| format!("make {RECOVERY_LABELS}"))?;
+        fs::set_permissions(RECOVERY_LABELS, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .with_context(|| format!("open {RECOVERY_LABELS} to every user"))?;
+        fs::copy(from, &into).with_context(|| format!("copy {} to {}", from.display(), into.display()))?;
+        fs::set_permissions(&into, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .with_context(|| format!("let every user read {}", into.display()))?;
+    }
     let manifest_dir = Path::new(RECOVERY_MANIFEST).parent().expect("a named file");
     fs::create_dir_all(manifest_dir).with_context(|| format!("make {}", manifest_dir.display()))?;
     fs::set_permissions(manifest_dir, std::os::unix::fs::PermissionsExt::from_mode(0o755))
@@ -99,8 +129,67 @@ fn describe_hardware(wanted: &[String]) -> Result<String> {
 }
 
 pub fn libraries() -> Result<Option<PathBuf>> {
-    let Some(version) = skyward_sys::prop(VENDOR_INTERFACE) else { return Ok(None) };
-    Ok(bundle(&format!("com.android.vndk.v{version}"))?.map(|at| at.join(BUNDLE_LIBS)))
+    let mut versions = Vec::new();
+    if let Some(v) = skyward_sys::prop(VENDOR_INTERFACE).filter(|v| !v.is_empty()) {
+        versions.push(v);
+    }
+    for v in ["30", "31", "32", "33", "34", "35"] {
+        if !versions.iter().any(|c| c == v) {
+            versions.push(v.to_string());
+        }
+    }
+    for version in versions {
+        if let Ok(Some(at)) = bundle(&format!("com.android.vndk.v{version}")) {
+            let libs = at.join(BUNDLE_LIBS);
+            if libs.is_dir() {
+                return Ok(Some(libs));
+            }
+        }
+        for dir in [
+            format!("/mnt/system/system/lib64/vndk-sp-{version}"),
+            format!("/mnt/system/system/lib64/vndk-{version}"),
+            format!("/mnt/system_ext/lib64/vndk-sp-{version}"),
+            format!("/mnt/system_ext/lib64/vndk-{version}"),
+        ] {
+            let path = PathBuf::from(dir);
+            if path.is_dir() {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn find_bundle_source(name: &str) -> Option<PathBuf> {
+    let google_name = name.replacen("com.android.", "com.google.android.", 1);
+    for dir in BUNDLE_DIRS {
+        let base = Path::new(dir);
+        for candidate in [name, google_name.as_str()] {
+            for ext in ["apex", "capex"] {
+                let p = base.join(format!("{candidate}.{ext}"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            let flat = base.join(candidate);
+            if flat.is_dir() {
+                return Some(flat);
+            }
+        }
+        if let Ok(entries) = fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(fname) = path.file_name().and_then(|s| s.to_str()) else { continue };
+                if (fname.starts_with(&format!("{name}.")) || fname.starts_with(&format!("{google_name}."))
+                    || fname.starts_with(&format!("{name}_")) || fname.starts_with(&format!("{google_name}_")))
+                    && (path.is_dir() || fname.ends_with(".apex") || fname.ends_with(".capex"))
+                {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn bundle(name: &str) -> Result<Option<PathBuf>> {
@@ -108,11 +197,24 @@ fn bundle(name: &str) -> Result<Option<PathBuf>> {
     if skyward_block::mount::is_mount_point(&at)? {
         return Ok(Some(at));
     }
-    let Some(file) = BUNDLE_DIRS.iter().map(|d| Path::new(d).join(format!("{name}.apex"))).find(|p| p.is_file()) else {
+    if at.is_dir() && (at.join(BUNDLE_LIBS).is_dir() || at.join(BUNDLE_LOADER).is_file()) {
+        return Ok(Some(at));
+    }
+    let Some(source) = find_bundle_source(name) else {
         return Ok(None);
     };
-    let (offset, length) = image(&file)?;
-    let device = skyward_block::loopdev::attach(&file, offset, length)?;
+    if source.is_dir() {
+        if let Some(parent) = at.parent() {
+            let _ = fs::create_dir_all(parent);
+            let _ = fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o755));
+        }
+        if at.symlink_metadata().is_err() {
+            let _ = std::os::unix::fs::symlink(&source, &at);
+        }
+        return Ok(Some(source));
+    }
+    let (img_file, offset, length) = image(&source, name)?;
+    let device = skyward_block::loopdev::attach(&img_file, offset, length)?;
     fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
     if let Some(parent) = at.parent() {
         let _ = fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o755));
@@ -121,15 +223,32 @@ fn bundle(name: &str) -> Result<Option<PathBuf>> {
     Ok(Some(at))
 }
 
-fn image(file: &Path) -> Result<(u64, u64)> {
+fn image(file: &Path, name: &str) -> Result<(PathBuf, u64, u64)> {
     let f = fs::File::open(file).with_context(|| format!("open {}", file.display()))?;
     let mut bundle = zip::ZipArchive::new(f).with_context(|| format!("read what is in {}", file.display()))?;
-    let entry = bundle.by_name(BUNDLE_IMAGE).with_context(|| format!("{} holds no {BUNDLE_IMAGE}", file.display()))?;
-    if entry.compression() != zip::CompressionMethod::Stored {
-        anyhow::bail!("{} keeps its {BUNDLE_IMAGE} packed, which cannot be opened where it lies", file.display());
+    if bundle.by_name(BUNDLE_IMAGE).is_ok() {
+        let mut entry = bundle.by_name(BUNDLE_IMAGE).with_context(|| format!("{} holds no {BUNDLE_IMAGE}", file.display()))?;
+        if entry.compression() == zip::CompressionMethod::Stored
+            && let Some(start) = entry.data_start()
+        {
+            return Ok((file.to_path_buf(), start, entry.size()));
+        }
+        let _ = fs::create_dir_all("/tmp");
+        let unpacked = PathBuf::from(format!("/tmp/{name}.{BUNDLE_IMAGE}"));
+        let mut out = fs::File::create(&unpacked).with_context(|| format!("create {}", unpacked.display()))?;
+        let written = std::io::copy(&mut entry, &mut out).with_context(|| format!("unpack {BUNDLE_IMAGE} from {}", file.display()))?;
+        return Ok((unpacked, 0, written));
     }
-    let start = entry.data_start().with_context(|| format!("{BUNDLE_IMAGE} in {} says where it is not", file.display()))?;
-    Ok((start, entry.size()))
+    if bundle.by_name(ORIGINAL_APEX).is_ok() {
+        let mut inner = bundle.by_name(ORIGINAL_APEX).with_context(|| format!("{} holds no {ORIGINAL_APEX}", file.display()))?;
+        let _ = fs::create_dir_all("/tmp");
+        let inner_path = PathBuf::from(format!("/tmp/{name}.{ORIGINAL_APEX}"));
+        let mut out = fs::File::create(&inner_path).with_context(|| format!("create {}", inner_path.display()))?;
+        std::io::copy(&mut inner, &mut out).with_context(|| format!("unpack {ORIGINAL_APEX} from {}", file.display()))?;
+        drop(out);
+        return image(&inner_path, name);
+    }
+    anyhow::bail!("{} holds neither {BUNDLE_IMAGE} nor {ORIGINAL_APEX}", file.display())
 }
 
 pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
